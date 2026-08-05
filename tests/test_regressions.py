@@ -110,8 +110,64 @@ def _fast_rule_kwargs() -> dict[str, object]:
         "diagnostics_output_path": None,
         "confidence_output_path": None,
         "confidence_summary_path": None,
+        "confidence_calibration_window": None,
+        "confidence_calibration_compare_windows": (),
+        "rolling_confidence_output_path": None,
+        "rolling_confidence_comparison_output_path": None,
         "progress": False,
     }
+
+
+def test_cli_helpers_preserve_loop_argument_overrides():
+    args = core._build_argument_parser().parse_args(
+        [
+            "--mode",
+            "predict",
+            "--loop-validate",
+            "--latest-periods",
+            "7",
+            "--start-date",
+            "20240101",
+            "--end-date",
+            "20241231",
+            "--confidence-calibration-window",
+            "0",
+            "--confidence-calibration-compare-windows",
+            "120, 300,600",
+            "--state-veto-quantiles",
+            "0.2,0.4",
+            "--high-confidence-max-veto-state-rows",
+            "-1",
+            "--recent-failure-threshold",
+            "0.37",
+            "--regime-postprocess-state-columns",
+            "vol20_bucket, streak_state",
+            "--no-progress",
+            "--epochs",
+            "3",
+        ]
+    )
+
+    kwargs = core._loop_validation_kwargs_from_cli_args(
+        args,
+        output_path="result.csv",
+    )
+
+    assert core._resolve_cli_mode(args) == "loop_validate"
+    assert core._config_from_cli_args(args).epochs == 3
+    assert kwargs["start_date"] is None
+    assert kwargs["end_date"] is None
+    assert kwargs["periods"] == 7
+    assert kwargs["confidence_calibration_window"] is None
+    assert kwargs["confidence_calibration_compare_windows"] == (120, 300, 600)
+    assert kwargs["state_veto_quantiles"] == (0.2, 0.4)
+    assert kwargs["high_confidence_max_veto_state_rows"] is None
+    assert kwargs["recent_failure_degrade_threshold"] == pytest.approx(0.37)
+    assert kwargs["regime_postprocess_state_columns"] == (
+        "vol20_bucket",
+        "streak_state",
+    )
+    assert kwargs["progress"] is False
 
 
 def test_data_builders_keep_unknown_target_and_apply_timing_lag(data_module):
@@ -220,6 +276,157 @@ def test_historical_selector_warms_history_without_failure_guard(monkeypatch):
     )
 
     assert history_lengths[-1] >= 7
+
+
+def test_loop_confidence_is_returned_saved_and_shown(tmp_path: Path, capsys):
+    output_path = tmp_path / "prediction_results.csv"
+    calibration_path = tmp_path / "confidence_calibration.csv"
+    calibration_summary_path = tmp_path / "confidence_calibration_summary.csv"
+    loop_kwargs = _fast_rule_kwargs()
+    loop_kwargs.update(
+        {
+            "output_path": str(output_path),
+            "confidence_calibration_output_path": str(calibration_path),
+            "confidence_calibration_summary_path": str(calibration_summary_path),
+            "progress": True,
+        }
+    )
+
+    result = core.loop_validate_prediction_results(
+        _market_frame(90),
+        config=_loop_config(),
+        periods=2,
+        signal_engine="volatility_rule",
+        recent_failure_guard=False,
+        **loop_kwargs,
+    )
+
+    saved = pd.read_csv(output_path)
+    calibration = pd.read_csv(calibration_path)
+    calibration_summary = pd.read_csv(calibration_summary_path)
+    assert "confidence" in result.columns
+    assert result["confidence"].between(0.0, 1.0).all()
+    assert np.allclose(saved["confidence"], result["confidence"])
+    assert int(calibration["rows"].sum()) == len(result)
+    assert calibration_summary.loc[0, "rows_used"] == len(result)
+    progress_output = capsys.readouterr().err
+    assert "confidence=" in progress_output
+    assert "%" in progress_output
+
+
+def test_confidence_tracks_direction_reversals():
+    veto_signal = core.RuleSignal(
+        predicted_return=0.003,
+        predicted_label=1,
+        rule_names=["test"],
+        calibration_accuracy=0.35,
+        calibration_rows=20,
+        diagnostics={"veto_applied": 1},
+    )
+    assert core._rule_signal_confidence(veto_signal) == pytest.approx(0.65)
+
+    guard_diagnostics = {
+        "recent_failure_guard_applied": 1,
+        "recent_failure_guard_accuracy": 0.4,
+    }
+    assert core._confidence_after_failure_guard(
+        0.65,
+        guard_diagnostics,
+    ) == pytest.approx(0.6)
+
+
+def test_confidence_calibration_report_matches_bin_accuracy():
+    frame = pd.DataFrame(
+        {
+            "confidence": [0.60, 0.60, 0.60, 0.60, 2.0 / 3.0, 2.0 / 3.0],
+            "correct": [True, True, True, False, True, False],
+        }
+    )
+
+    by_bin, summary = core.confidence_calibration_report(
+        frame,
+        bin_edges=(0.0, 0.60, 0.65, 1.0),
+    )
+
+    first = by_bin.loc[by_bin["rows"] == 4].iloc[0]
+    second = by_bin.loc[by_bin["rows"] == 2].iloc[0]
+    assert first["direction_accuracy"] == pytest.approx(0.75)
+    assert second["direction_accuracy"] == pytest.approx(0.5)
+    assert summary.loc[0, "rows_used"] == 6
+    assert summary.loc[0, "direction_accuracy"] == pytest.approx(4.0 / 6.0)
+    assert summary.loc[0, "expected_calibration_error"] == pytest.approx(
+        (4 / 6) * 0.15 + (2 / 6) * (2.0 / 3.0 - 0.5)
+    )
+
+
+def test_rolling_confidence_calibration_uses_prior_rows_only():
+    frame = pd.DataFrame(
+        {
+            "trade_date": np.arange(1, 41),
+            "confidence": np.linspace(0.50, 0.85, 40),
+            "correct": (np.arange(40) % 3 != 0),
+        }
+    )
+    changed = frame.copy()
+    changed.loc[20, "correct"] = not bool(changed.loc[20, "correct"])
+
+    original = core._apply_rolling_confidence_calibration(
+        frame,
+        window=20,
+        min_rows=10,
+        method="platt",
+    )
+    changed_result = core._apply_rolling_confidence_calibration(
+        changed,
+        window=20,
+        min_rows=10,
+        method="platt",
+    )
+
+    assert original.loc[20, "confidence_calibration_rows"] == 20
+    assert original.loc[20, "confidence_calibration_fallback"] == 0
+    assert original.loc[20, "calibrated_confidence"] == pytest.approx(
+        changed_result.loc[20, "calibrated_confidence"]
+    )
+    comparison, _ = core.compare_rolling_confidence_calibration(
+        frame,
+        windows=(10, 20),
+        min_rows=5,
+        evaluation_start_trade_date=21,
+    )
+    assert comparison["selected"].astype(bool).sum() == 1
+
+
+def test_loop_can_compare_rolling_calibration_windows(tmp_path: Path):
+    loop_kwargs = _fast_rule_kwargs()
+    loop_kwargs.update(
+        {
+            "confidence_calibration_window": 20,
+            "confidence_calibration_min_rows": 5,
+            "confidence_calibration_compare_windows": (10, 20),
+            "rolling_confidence_output_path": str(
+                tmp_path / "rolling_confidence.csv"
+            ),
+            "rolling_confidence_comparison_output_path": str(
+                tmp_path / "rolling_comparison.csv"
+            ),
+        }
+    )
+
+    result = core.loop_validate_prediction_results(
+        _market_frame(90),
+        config=_loop_config(),
+        periods=2,
+        signal_engine="volatility_rule",
+        recent_failure_guard=False,
+        **loop_kwargs,
+    )
+
+    comparison = pd.read_csv(tmp_path / "rolling_comparison.csv")
+    assert "calibrated_confidence" in result.columns
+    assert result["calibrated_confidence"].between(0.0, 1.0).all()
+    assert set(comparison["window"]) == {10, 20}
+    assert comparison["evaluation_rows"].ge(0).all()
 
 
 def test_regime_states_use_full_market_history():

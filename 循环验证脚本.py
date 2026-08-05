@@ -38,6 +38,7 @@ import pandas as pd
 import torch
 import torch.nn as nn
 from sklearn.ensemble import ExtraTreesClassifier, GradientBoostingClassifier
+from sklearn.isotonic import IsotonicRegression
 from sklearn.linear_model import LogisticRegression, RidgeClassifier
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.naive_bayes import GaussianNB
@@ -47,12 +48,12 @@ from torch.utils.data import DataLoader, TensorDataset
 
 try:
     from technical_features import legacy_preprocess_data as _legacy_technical_features
-except Exception:  # pragma: no cover - keep this predictor usable standalone.
+except Exception:  # pragma: no cover - 保证预测器可以独立运行。
     _legacy_technical_features = None
 
 try:
     from sklearn.metrics import average_precision_score, roc_auc_score
-except Exception:  # pragma: no cover - sklearn is expected, but keep import safe.
+except Exception:  # pragma: no cover - sklearn 通常存在，但保持导入安全。
     average_precision_score = None
     roc_auc_score = None
 
@@ -61,31 +62,83 @@ DeviceName = Literal["auto", "cpu", "cuda"]
 ExternalFeatureMode = Literal["none", "core", "all"]
 TechnicalFeatureMode = Literal["none", "v1", "v1_core"]
 ReturnMagnitudeMode = Literal["directional_median", "range_scaled"]
+CliMode = Literal["predict", "loop_validate", "walk_forward"]
+ConfidenceCalibrationMethod = Literal["platt", "isotonic"]
+SignalEngine = Literal[
+    "bilstm",
+    "volatility_rule",
+    "state_veto_rule",
+    "stability_rule",
+    "nested_ml",
+    "hybrid",
+    "calibrated_rule",
+    "historical_selector",
+]
+
+_CLI_MODES: tuple[CliMode, ...] = ("predict", "loop_validate", "walk_forward")
+_SIGNAL_ENGINES: tuple[SignalEngine, ...] = (
+    "bilstm",
+    "volatility_rule",
+    "state_veto_rule",
+    "stability_rule",
+    "nested_ml",
+    "hybrid",
+    "calibrated_rule",
+    "historical_selector",
+)
 
 
-# =========================
-# Script Run Settings
-# =========================
-# Edit these variables when you want to run this file directly without typing
-# command-line arguments. Command-line arguments still override these values.
+# ---------------------------------------------------------------------------
+# 脚本默认设置
+# ---------------------------------------------------------------------------
+# 直接运行本文件时可以编辑这些变量，命令行参数仍然拥有更高优先级。
 #
-# SCRIPT_MODE:
-#   "predict"       -> train once and predict the next trading day
-#   "loop_validate" -> generate prediction_results.csv-style daily validation
-#   "walk_forward"  -> fold-level walk-forward metrics
+# SCRIPT_MODE：
+#   "predict"       -> 训练一次并预测下一个交易日
+#   "loop_validate" -> 生成 prediction_results.csv 风格的逐日验证结果
+#   "walk_forward"  -> 输出分折的滚动验证指标
 SCRIPT_MODE = "loop_validate"
 SCRIPT_CSV_PATH: str | None = "market_data/merged_features.csv"
 SCRIPT_OUTPUT_PATH: str | None = "drp_feim_prediction_results.csv"
 SCRIPT_DIAGNOSTICS_OUTPUT_PATH: str | None = "drp_feim_rule_diagnostics.csv"
 SCRIPT_CONFIDENCE_OUTPUT_PATH: str | None = "drp_feim_high_confidence_results.csv"
 SCRIPT_CONFIDENCE_SUMMARY_PATH: str | None = "drp_feim_confidence_summary.csv"
+SCRIPT_CONFIDENCE_CALIBRATION_OUTPUT_PATH: str | None = (
+    "drp_feim_confidence_calibration.csv"
+)
+SCRIPT_CONFIDENCE_CALIBRATION_SUMMARY_PATH: str | None = (
+    "drp_feim_confidence_calibration_summary.csv"
+)
+SCRIPT_CONFIDENCE_CALIBRATION_BIN_EDGES = (
+    0.0,
+    0.50,
+    0.55,
+    0.60,
+    0.65,
+    0.70,
+    0.75,
+    0.80,
+    0.90,
+    1.0,
+)
+# 滚动置信度校准与信号引擎自身的历史校准相互独立。
+# 设置为 0 或 None 可以禁用滚动映射。
+SCRIPT_CONFIDENCE_CALIBRATION_WINDOW: int | None = 300
+SCRIPT_CONFIDENCE_CALIBRATION_MIN_ROWS = 60
+SCRIPT_CONFIDENCE_CALIBRATION_METHOD = "platt"
+SCRIPT_CONFIDENCE_CALIBRATION_COMPARE_WINDOWS: tuple[int, ...] = (120, 300, 600)
+SCRIPT_ROLLING_CONFIDENCE_OUTPUT_PATH: str | None = (
+    "drp_feim_rolling_confidence_results.csv"
+)
+SCRIPT_ROLLING_CONFIDENCE_COMPARISON_OUTPUT_PATH: str | None = (
+    "drp_feim_rolling_confidence_window_comparison.csv"
+)
 SCRIPT_ENCODING = "utf-8-sig"
 
-# Date range for loop validation. Keep start/end as None to validate the latest
-# SCRIPT_PERIODS verifiable trading days.
+# 循环验证的日期范围。start/end 都为 None 时，验证最近 SCRIPT_PERIODS 个可验证交易日。
 SCRIPT_START_DATE: str | None = None
 SCRIPT_END_DATE: str | None = None
-SCRIPT_PERIODS = 10 #回测周期
+SCRIPT_PERIODS = 10  # 回测周期
 
 SCRIPT_EPOCHS = 10
 SCRIPT_LOOKBACK = 30
@@ -96,27 +149,23 @@ SCRIPT_TECHNICAL_FEATURE_MODE: TechnicalFeatureMode = "none"
 SCRIPT_VERBOSE = False
 SCRIPT_SHOW_PROGRESS = True
 
-# Direction engine for loop validation:
-#   "bilstm"          -> original PDF-style BiLSTM-Attention, GPU accelerated
-#   "volatility_rule" -> strict nested daily rule selection; every day selects
-#                        feature/threshold/direction from prior history only
-#   "state_veto_rule" -> volatility_rule plus strict historical low-volatility
-#                        state veto/reversal when that state has underperformed
-#   "stability_rule"  -> strict nested rule selection with recent/long-term
-#                        accuracy blend and stability penalty
-#   "nested_ml"       -> strict nested ML model selection over existing features
-#   "hybrid"          -> strict daily chooser between volatility_rule and nested_ml
-#   "calibrated_rule" -> historical volatility/range rule ensemble calibrated
-#                        before the validation window
-#   "historical_selector" -> strict daily chooser between state_veto_rule and
-#                        volatility_rule, with disagreement-only switch guard
+# 循环验证使用的方向引擎：
+#   "bilstm"          -> 原始 PDF 风格的 BiLSTM-Attention，支持 GPU 加速
+#   "volatility_rule" -> 严格嵌套的逐日规则选择，只使用当日之前的历史特征、阈值和方向
+#   "state_veto_rule" -> volatility_rule 加上严格历史低波动状态否决/反转
+#                         （该状态历史表现不佳时生效）
+#   "stability_rule"  -> 严格嵌套规则选择，融合近期/长期准确率并惩罚不稳定性
+#   "nested_ml"       -> 基于已有特征的严格嵌套 ML 模型选择
+#   "hybrid"          -> 每日严格选择 volatility_rule 或 nested_ml
+#   "calibrated_rule" -> 在验证窗口之前完成历史波动率/区间规则集校准
+#   "historical_selector" -> 每日严格选择 state_veto_rule 或 volatility_rule，
+#                             仅在分歧时启用切换保护
 SCRIPT_SIGNAL_ENGINE = "state_veto_rule"
 SCRIPT_RULE_THRESHOLD_END_DATE: str | None = "20241231"
 SCRIPT_RULE_CALIBRATION_START_DATE: str | None = "20240101"
 SCRIPT_RULE_CALIBRATION_END_DATE: str | None = "20241231"
 SCRIPT_RULE_TOP_K = 5
-# Kept for CLI compatibility; strict volatility_rule now searches quantiles
-# from prior history instead of using a fixed quantile.
+# 为兼容 CLI 保留；严格 volatility_rule 现在从历史数据搜索分位数，而不是使用固定分位数。
 SCRIPT_VOLATILITY_RULE_QUANTILE = 0.2
 SCRIPT_NESTED_RULE_THRESHOLD_WINDOW = 756
 SCRIPT_NESTED_RULE_CALIBRATION_WINDOW = 120
@@ -140,8 +189,7 @@ SCRIPT_NESTED_ML_CALIBRATION_WINDOW = 120
 SCRIPT_NESTED_ML_MIN_TRAIN_ROWS = 252
 SCRIPT_NESTED_ML_TOP_K = 3
 
-# Magnitude calibration is sign-preserving: it may change the predicted return
-# size, but it must not change the direction chosen by the signal engine.
+# 幅度校准保持方向不变：可以调整预测收益的大小，但不能改变信号引擎选择的方向。
 SCRIPT_RETURN_MAGNITUDE_MODE: ReturnMagnitudeMode = "range_scaled"
 SCRIPT_RETURN_MAGNITUDE_WINDOW = 756
 SCRIPT_RETURN_MAGNITUDE_MIN_ROWS = 80
@@ -149,16 +197,15 @@ SCRIPT_RETURN_MAGNITUDE_GRID_SIZE = 120
 SCRIPT_RETURN_MAGNITUDE_CLIP_LOW_QUANTILE = 0.05
 SCRIPT_RETURN_MAGNITUDE_CLIP_HIGH_QUANTILE = 0.95
 
-# Strictly historical failure guard. It does not use the current row's realized
-# return. The guard first marks degraded recent performance, and only flips the
-# current signal when a shorter confirmation window also remains weak.
+# 严格使用历史数据的失败保护，不使用当前行的实际收益。
+# 保护机制先识别近期表现恶化，只有较短确认窗口也持续较弱时才反转当前信号。
 SCRIPT_RECENT_FAILURE_GUARD = True
 SCRIPT_RECENT_FAILURE_WINDOW = 15
 SCRIPT_RECENT_FAILURE_DEGRADE_THRESHOLD = 0.45
 SCRIPT_RECENT_FAILURE_INVERT_THRESHOLD = 0.40
 SCRIPT_RECENT_FAILURE_SHORT_WINDOW = 5
 SCRIPT_RECENT_FAILURE_SHORT_THRESHOLD = 0.40
-# Backward-compatible alias for older code/notes.
+# 为旧代码和旧记录保留的兼容别名。
 SCRIPT_RECENT_FAILURE_THRESHOLD = SCRIPT_RECENT_FAILURE_DEGRADE_THRESHOLD
 
 SCRIPT_SELECTOR_WINDOW = 240
@@ -190,6 +237,11 @@ SCRIPT_REGIME_POSTPROCESS_MAX_FLIP_RATE = 1.0
 SCRIPT_INITIAL_TRAIN_FRACTION = 0.65
 SCRIPT_TEST_SIZE = 120
 SCRIPT_MAX_SPLITS = 5
+
+
+# ---------------------------------------------------------------------------
+# 配置与内部数据模型
+# ---------------------------------------------------------------------------
 
 
 @dataclass(slots=True)
@@ -283,6 +335,65 @@ class NestedMLCache(NamedTuple):
     feature_columns: list[str]
 
 
+@dataclass(frozen=True, slots=True)
+class _LoopValidationRange:
+    """记录内部处理范围，以及返回给调用方的较窄范围。"""
+
+    processing_start_index: int
+    output_start_index: int
+    end_index: int
+    output_start_trade_date: int
+    output_end_trade_date: int
+
+    @property
+    def output_rows(self) -> int:
+        return self.end_index - self.output_start_index + 1
+
+    @property
+    def processing_warmup_rows(self) -> int:
+        return self.output_start_index - self.processing_start_index
+
+
+@dataclass(frozen=True, slots=True)
+class _RegimePostprocessOptions:
+    enabled: bool
+    state_columns: tuple[str, ...]
+    history_window: int
+    min_history: int
+    flip_below: float
+    max_flip_rate: float
+    diagnostics_output_path: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class _ConfidenceCalibrationOptions:
+    bin_edges: tuple[float, ...]
+    window: int | None
+    min_rows: int
+    method: ConfidenceCalibrationMethod
+    compare_windows: tuple[int, ...]
+    rolling_windows: tuple[int, ...]
+    rolling_output_path: str | None
+    comparison_output_path: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class _HighConfidenceOptions:
+    min_base_calibration: float
+    min_veto_state_accuracy: float
+    max_veto_state_rows: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class _LoopOutputPaths:
+    result: str | None
+    diagnostics: str | None
+    high_confidence: str | None
+    high_confidence_summary: str | None
+    confidence_calibration: str | None
+    confidence_calibration_summary: str | None
+
+
 class _BiLSTMAttention(nn.Module):
     def __init__(
         self,
@@ -309,6 +420,11 @@ class _BiLSTMAttention(nn.Module):
         context = torch.sum(weights * lstm_out, dim=1)
         hidden = torch.relu(self.dense(self.dropout(context)))
         return self.output(self.dropout(hidden)).squeeze(-1)
+
+
+# ---------------------------------------------------------------------------
+# 输入结构与特征常量
+# ---------------------------------------------------------------------------
 
 
 _ALIASES: dict[str, tuple[str, ...]] = {
@@ -430,9 +546,15 @@ _PUBLIC_RESULT_COLUMNS = (
     "target_trade_date",
     "predicted_next_day_return",
     "predicted_next_day_close",
+    "confidence",
     "next_day_real_return",
     "direction_correct",
 )
+
+
+# ---------------------------------------------------------------------------
+# 公开预测 API
+# ---------------------------------------------------------------------------
 
 
 def predict_next_day(
@@ -650,6 +772,135 @@ def walk_forward_validate(
     return pd.DataFrame(rows)
 
 
+# ---------------------------------------------------------------------------
+# 循环验证
+# ---------------------------------------------------------------------------
+
+
+def _validate_loop_options(
+    *,
+    signal_engine: str,
+    return_magnitude_mode: str,
+    confidence_calibration_window: int | None,
+    confidence_calibration_compare_windows: tuple[int, ...],
+    confidence_calibration_min_rows: int,
+    confidence_calibration_method: str,
+) -> tuple[int, ...]:
+    if signal_engine not in _SIGNAL_ENGINES:
+        choices = ", ".join(repr(engine) for engine in _SIGNAL_ENGINES)
+        raise ValueError(f"signal_engine must be one of: {choices}.")
+    if return_magnitude_mode not in {"directional_median", "range_scaled"}:
+        raise ValueError(
+            "return_magnitude_mode must be 'directional_median' or 'range_scaled'."
+        )
+    if confidence_calibration_min_rows < 2:
+        raise ValueError("confidence_calibration_min_rows must be at least 2.")
+    if confidence_calibration_method not in {"platt", "isotonic"}:
+        raise ValueError("confidence_calibration_method must be 'platt' or 'isotonic'.")
+    return _normalize_confidence_calibration_windows(
+        confidence_calibration_window,
+        confidence_calibration_compare_windows,
+    )
+
+
+def _resolve_loop_validation_range(
+    *,
+    base: pd.DataFrame,
+    config: DirectionPredictionConfig,
+    start_date: str | int | pd.Timestamp | None,
+    end_date: str | int | pd.Timestamp | None,
+    periods: int,
+    regime_postprocess: bool,
+    regime_history_window: int,
+    regime_min_history: int,
+    rolling_calibration_windows: tuple[int, ...],
+) -> _LoopValidationRange:
+    minimum_start_index = config.lookback + config.min_train_sequences
+    output_start_index = minimum_start_index
+    end_index = len(base) - 2
+
+    if start_date is not None:
+        start_ts = _parse_single_date(start_date, config.dayfirst)
+        matching = np.flatnonzero(base["date"].ge(start_ts).to_numpy())
+        if len(matching) == 0:
+            raise ValueError(f"start_date {start_date!r} is after the data end.")
+        output_start_index = max(output_start_index, int(matching[0]))
+    if end_date is not None:
+        end_ts = _parse_single_date(end_date, config.dayfirst)
+        matching = np.flatnonzero(base["date"].le(end_ts).to_numpy())
+        if len(matching) == 0:
+            raise ValueError(f"end_date {end_date!r} is before the data start.")
+        end_index = min(end_index, int(matching[-1]))
+    if start_date is None and periods > 0:
+        output_start_index = max(output_start_index, end_index - periods + 1)
+
+    if output_start_index > end_index:
+        raise ValueError("No validation dates remain after applying filters.")
+
+    processing_start_index = output_start_index
+    if regime_postprocess:
+        normalized_history_window = max(1, int(regime_history_window))
+        regime_warmup_span = max(
+            1,
+            normalized_history_window * 2,
+            int(regime_min_history),
+        )
+        processing_start_index = max(
+            minimum_start_index,
+            output_start_index - regime_warmup_span,
+        )
+    if rolling_calibration_windows:
+        processing_start_index = max(
+            minimum_start_index,
+            output_start_index - max(rolling_calibration_windows),
+        )
+
+    return _LoopValidationRange(
+        processing_start_index=processing_start_index,
+        output_start_index=output_start_index,
+        end_index=end_index,
+        output_start_trade_date=int(
+            base["date"].iloc[output_start_index].strftime("%Y%m%d")
+        ),
+        output_end_trade_date=int(base["date"].iloc[end_index].strftime("%Y%m%d")),
+    )
+
+
+def _append_selector_history(
+    *,
+    history: list[dict[str, Any]],
+    base: pd.DataFrame,
+    idx: int,
+    candidate_signals: dict[str, RuleSignal] | None,
+    real_pct_change: float,
+) -> None:
+    if candidate_signals is None:
+        return
+    history.append(
+        {
+            "trade_date": int(base["date"].iloc[idx].strftime("%Y%m%d")),
+            "state_veto_rule_predicted_pct_change": float(
+                candidate_signals["state_veto_rule"].predicted_return
+            ),
+            "state_veto_rule_correct": bool(
+                _direction_sign(
+                    candidate_signals["state_veto_rule"].predicted_return
+                )
+                == _direction_sign(real_pct_change)
+            ),
+            "volatility_rule_predicted_pct_change": float(
+                candidate_signals["volatility_rule"].predicted_return
+            ),
+            "volatility_rule_correct": bool(
+                _direction_sign(
+                    candidate_signals["volatility_rule"].predicted_return
+                )
+                == _direction_sign(real_pct_change)
+            ),
+        }
+    )
+
+
 def loop_validate_prediction_results(
     df: pd.DataFrame,
     config: DirectionPredictionConfig | None = None,
@@ -661,17 +912,27 @@ def loop_validate_prediction_results(
     diagnostics_output_path: str | None = None,
     confidence_output_path: str | None = None,
     confidence_summary_path: str | None = None,
+    confidence_calibration_output_path: str | None = None,
+    confidence_calibration_summary_path: str | None = None,
+    confidence_calibration_bin_edges: tuple[float, ...] = (
+        SCRIPT_CONFIDENCE_CALIBRATION_BIN_EDGES
+    ),
+    confidence_calibration_window: int | None = (
+        SCRIPT_CONFIDENCE_CALIBRATION_WINDOW
+    ),
+    confidence_calibration_min_rows: int = SCRIPT_CONFIDENCE_CALIBRATION_MIN_ROWS,
+    confidence_calibration_method: ConfidenceCalibrationMethod = (
+        SCRIPT_CONFIDENCE_CALIBRATION_METHOD
+    ),
+    confidence_calibration_compare_windows: tuple[int, ...] = (
+        SCRIPT_CONFIDENCE_CALIBRATION_COMPARE_WINDOWS
+    ),
+    rolling_confidence_output_path: str | None = SCRIPT_ROLLING_CONFIDENCE_OUTPUT_PATH,
+    rolling_confidence_comparison_output_path: str | None = (
+        SCRIPT_ROLLING_CONFIDENCE_COMPARISON_OUTPUT_PATH
+    ),
     progress: bool = True,
-    signal_engine: Literal[
-        "bilstm",
-        "volatility_rule",
-        "state_veto_rule",
-        "stability_rule",
-        "nested_ml",
-        "hybrid",
-        "calibrated_rule",
-        "historical_selector",
-    ] = "bilstm",
+    signal_engine: SignalEngine = "bilstm",
     rule_threshold_end_date: str | int | pd.Timestamp | None = None,
     rule_calibration_start_date: str | int | pd.Timestamp | None = None,
     rule_calibration_end_date: str | int | pd.Timestamp | None = None,
@@ -745,11 +1006,13 @@ def loop_validate_prediction_results(
     Public output columns are exactly:
 
     signal_date,target_trade_date,predicted_next_day_return,
-    predicted_next_day_close,next_day_real_return,direction_correct
+    predicted_next_day_close,confidence,next_day_real_return,direction_correct
 
     ``signal_date`` is the date on which the prediction is made, while
     ``target_trade_date`` is the following trading day whose return is evaluated.
     Return columns contain decimal returns (0.01 means 1%), not percentage points.
+    ``confidence`` is a value in [0, 1] and is displayed as a percentage by the
+    command-line interface.
     """
 
     cfg = config or DirectionPredictionConfig()
@@ -758,62 +1021,29 @@ def loop_validate_prediction_results(
     if len(base) < cfg.lookback + cfg.min_train_sequences + 2:
         raise ValueError("Not enough rows for loop validation.")
 
-    first_candidate = cfg.lookback + cfg.min_train_sequences
-    last_candidate = len(base) - 2
-    if start_date is not None:
-        start_ts = _parse_single_date(start_date, cfg.dayfirst)
-        matching = np.flatnonzero(base["date"].ge(start_ts).to_numpy())
-        if len(matching) == 0:
-            raise ValueError(f"start_date {start_date!r} is after the data end.")
-        first_candidate = max(first_candidate, int(matching[0]))
-    if end_date is not None:
-        end_ts = _parse_single_date(end_date, cfg.dayfirst)
-        matching = np.flatnonzero(base["date"].le(end_ts).to_numpy())
-        if len(matching) == 0:
-            raise ValueError(f"end_date {end_date!r} is before the data start.")
-        last_candidate = min(last_candidate, int(matching[-1]))
-    if start_date is None and periods > 0:
-        first_candidate = max(first_candidate, last_candidate - periods + 1)
+    rolling_windows = _validate_loop_options(
+        signal_engine=signal_engine,
+        return_magnitude_mode=return_magnitude_mode,
+        confidence_calibration_window=confidence_calibration_window,
+        confidence_calibration_compare_windows=(
+            confidence_calibration_compare_windows
+        ),
+        confidence_calibration_min_rows=confidence_calibration_min_rows,
+        confidence_calibration_method=confidence_calibration_method,
+    )
+    validation_range = _resolve_loop_validation_range(
+        base=base,
+        config=cfg,
+        start_date=start_date,
+        end_date=end_date,
+        periods=periods,
+        regime_postprocess=regime_postprocess,
+        regime_history_window=regime_postprocess_history_window,
+        regime_min_history=regime_postprocess_min_history,
+        rolling_calibration_windows=rolling_windows,
+    )
 
-    if first_candidate > last_candidate:
-        raise ValueError("No validation dates remain after applying filters.")
-
-    output_first_candidate = first_candidate
-    if regime_postprocess:
-        normalized_regime_history_window = max(
-            1,
-            int(regime_postprocess_history_window),
-        )
-        regime_warmup_span = max(
-            1,
-            normalized_regime_history_window * 2,
-            int(regime_postprocess_min_history),
-        )
-        first_candidate = max(
-            cfg.lookback + cfg.min_train_sequences,
-            output_first_candidate - regime_warmup_span,
-        )
-
-    if signal_engine not in {
-        "bilstm",
-        "volatility_rule",
-        "state_veto_rule",
-        "stability_rule",
-        "nested_ml",
-        "hybrid",
-        "calibrated_rule",
-        "historical_selector",
-    }:
-        raise ValueError(
-            "signal_engine must be 'bilstm', 'volatility_rule', 'state_veto_rule', "
-            "'stability_rule', 'nested_ml', 'hybrid', 'calibrated_rule', or "
-            "'historical_selector'."
-        )
-    if return_magnitude_mode not in {"directional_median", "range_scaled"}:
-        raise ValueError(
-            "return_magnitude_mode must be 'directional_median' or 'range_scaled'."
-        )
-
+    # 为整个验证过程一次性准备引擎所需的特征和缓存。
     feature_frame: pd.DataFrame | None = None
     nested_rule_cache: NestedRuleCache | None = None
     nested_ml_cache: NestedMLCache | None = None
@@ -863,9 +1093,10 @@ def loop_validate_prediction_results(
         state_veto_base_signals = {}
         pre_start = max(
             cfg.lookback + cfg.min_train_sequences,
-            first_candidate - max(state_veto_window, state_veto_state_window, 600),
+            validation_range.processing_start_index
+            - max(state_veto_window, state_veto_state_window, 600),
         )
-        for signal_idx in range(pre_start, last_candidate + 1):
+        for signal_idx in range(pre_start, validation_range.end_index + 1):
             state_veto_base_signals[signal_idx] = _nested_volatility_rule_signal(
                 base=base,
                 cache=nested_rule_cache,
@@ -880,9 +1111,16 @@ def loop_validate_prediction_results(
             quantiles=state_veto_quantiles,
         )
 
+    # 下面的引擎分支负责生成原始方向、收益和置信度。
     def _compute_loop_signal(
         idx: int,
-    ) -> tuple[RuleSignal | None, float, dict[str, Any], dict[str, RuleSignal] | None]:
+    ) -> tuple[
+        RuleSignal | None,
+        float,
+        float,
+        dict[str, Any],
+        dict[str, RuleSignal] | None,
+    ]:
         signal: RuleSignal | None = None
         selector_diagnostics: dict[str, Any] = {}
         selector_candidate_signals: dict[str, RuleSignal] | None = None
@@ -999,51 +1237,22 @@ def loop_validate_prediction_results(
         else:
             train_frame = base.iloc[: idx + 1].copy()
             fitted = fit_direction_model(train_frame, config=cfg)
-            result = prediction_to_dict(fitted)
-            predicted_pct_change = float(result["estimated_next_return"])
+            fitted_result = prediction_to_dict(fitted)
+            predicted_pct_change = float(fitted_result["estimated_next_return"])
+        confidence = (
+            _rule_signal_confidence(signal)
+            if signal is not None
+            else float(fitted_result["confidence"])
+        )
         return (
             signal,
             float(predicted_pct_change),
+            confidence,
             selector_diagnostics,
             selector_candidate_signals,
         )
 
-    def _record_selector_history(
-        *,
-        idx: int,
-        selector_candidate_signals: dict[str, RuleSignal] | None,
-        real_pct_change: float,
-    ) -> None:
-        if selector_candidate_signals is None:
-            return
-        selector_history.append(
-            {
-                "trade_date": int(base["date"].iloc[idx].strftime("%Y%m%d")),
-                "state_veto_rule_predicted_pct_change": float(
-                    selector_candidate_signals["state_veto_rule"].predicted_return
-                ),
-                "state_veto_rule_correct": bool(
-                    _direction_sign(
-                        selector_candidate_signals[
-                            "state_veto_rule"
-                        ].predicted_return
-                    )
-                    == _direction_sign(real_pct_change)
-                ),
-                "volatility_rule_predicted_pct_change": float(
-                    selector_candidate_signals["volatility_rule"].predicted_return
-                ),
-                "volatility_rule_correct": bool(
-                    _direction_sign(
-                        selector_candidate_signals[
-                            "volatility_rule"
-                        ].predicted_return
-                    )
-                    == _direction_sign(real_pct_change)
-                ),
-            }
-        )
-
+    # 在第一条处理记录前，先用严格历史数据初始化所需状态。
     needs_selector_warmup = signal_engine == "historical_selector"
     if recent_failure_guard or needs_selector_warmup:
         warmup_span = 0
@@ -1061,9 +1270,15 @@ def loop_validate_prediction_results(
                 int(selector_window),
                 int(selector_disagreement_window),
             )
-        warmup_start = max(cfg.lookback + cfg.min_train_sequences, first_candidate - warmup_span)
-        for warmup_idx in range(warmup_start, first_candidate):
-            _, warmup_predicted_pct_change, _, warmup_selector_signals = (
+        warmup_start = max(
+            cfg.lookback + cfg.min_train_sequences,
+            validation_range.processing_start_index - warmup_span,
+        )
+        for warmup_idx in range(
+            warmup_start,
+            validation_range.processing_start_index,
+        ):
+            _, warmup_predicted_pct_change, _, _, warmup_selector_signals = (
                 _compute_loop_signal(warmup_idx)
             )
             warmup_real_pct_change = float(
@@ -1078,18 +1293,26 @@ def loop_validate_prediction_results(
                         == _direction_sign(warmup_real_pct_change)
                     )
                 )
-            _record_selector_history(
+            _append_selector_history(
+                history=selector_history,
+                base=base,
                 idx=warmup_idx,
-                selector_candidate_signals=warmup_selector_signals,
+                candidate_signals=warmup_selector_signals,
                 real_pct_change=warmup_real_pct_change,
             )
 
-    output_total = last_candidate - output_first_candidate + 1
-    processing_warmup_rows = output_first_candidate - first_candidate
-    for idx in range(first_candidate, last_candidate + 1):
-        signal, predicted_pct_change, selector_diagnostics, selector_candidate_signals = (
-            _compute_loop_signal(idx)
-        )
+    # 按时间顺序生成预热记录和可见记录，并在每条记录完成后更新状态。
+    for idx in range(
+        validation_range.processing_start_index,
+        validation_range.end_index + 1,
+    ):
+        (
+            signal,
+            predicted_pct_change,
+            confidence,
+            selector_diagnostics,
+            selector_candidate_signals,
+        ) = _compute_loop_signal(idx)
         raw_predicted_pct_change = float(predicted_pct_change)
         predicted_pct_change, magnitude_diagnostics = _calibrate_return_magnitude(
             base=base,
@@ -1113,6 +1336,7 @@ def loop_validate_prediction_results(
             short_window=recent_failure_short_window,
             short_threshold=recent_failure_short_threshold,
         )
+        confidence = _confidence_after_failure_guard(confidence, guard_diagnostics)
         real_pct_change = float(base["close"].iloc[idx + 1] / base["close"].iloc[idx] - 1.0)
         predicted_close = float(base["close"].iloc[idx] * (1.0 + predicted_pct_change))
         raw_correct = bool(
@@ -1123,9 +1347,11 @@ def loop_validate_prediction_results(
             _direction_sign(predicted_pct_change) == _direction_sign(real_pct_change)
         )
         raw_direction_history.append(raw_correct)
-        _record_selector_history(
+        _append_selector_history(
+            history=selector_history,
+            base=base,
             idx=idx,
-            selector_candidate_signals=selector_candidate_signals,
+            candidate_signals=selector_candidate_signals,
             real_pct_change=real_pct_change,
         )
         rows.append(
@@ -1133,6 +1359,7 @@ def loop_validate_prediction_results(
                 "trade_date": int(base["date"].iloc[idx].strftime("%Y%m%d")),
                 "predicted_pct_change": predicted_pct_change,
                 "predicted_close": predicted_close,
+                "confidence": confidence,
                 "real_pct_change": real_pct_change,
                 "correct": correct,
             }
@@ -1158,6 +1385,7 @@ def loop_validate_prediction_results(
                     "raw_predicted_pct_change": raw_predicted_pct_change,
                     "pre_guard_predicted_pct_change": pre_guard_predicted_pct_change,
                     "predicted_pct_change": predicted_pct_change,
+                    "confidence": confidence,
                     "real_pct_change": real_pct_change,
                     "raw_correct": raw_correct,
                     "correct": correct,
@@ -1173,13 +1401,14 @@ def loop_validate_prediction_results(
                     **diagnostics,
                 }
             )
-        if progress and idx >= output_first_candidate:
-            output_offset = idx - output_first_candidate + 1
-            visible_rows = rows[processing_warmup_rows:]
+        if progress and idx >= validation_range.output_start_index:
+            output_offset = idx - validation_range.output_start_index + 1
+            visible_rows = rows[validation_range.processing_warmup_rows :]
             accuracy = float(np.mean([row["correct"] for row in visible_rows]))
             print(
-                f"[{signal_engine}] [{output_offset}/{output_total}] "
+                f"[{signal_engine}] [{output_offset}/{validation_range.output_rows}] "
                 f"{rows[-1]['trade_date']} "
+                f"confidence={confidence:.2%} "
                 f"correct={correct} running_accuracy={accuracy:.4f}",
                 file=sys.stderr,
                 flush=True,
@@ -1191,6 +1420,7 @@ def loop_validate_prediction_results(
             "trade_date",
             "predicted_pct_change",
             "predicted_close",
+            "confidence",
             "real_pct_change",
             "correct",
         ],
@@ -1200,110 +1430,331 @@ def loop_validate_prediction_results(
     else:
         diagnostics_frame = pd.DataFrame()
 
-    if regime_postprocess:
-        regime_cfg = replace(cfg, external_feature_mode="all")
-        regime_base = _normalize_market_frame(df, regime_cfg)
-        regime_source = _build_regime_postprocess_frame(
-            result_frame=result_frame,
-            base=regime_base,
-            diagnostics_frame=diagnostics_frame,
-        )
-        result_frame, postprocess_diagnostics = _apply_regime_postprocess(
-            regime_source,
+    # 后处理、校准、裁剪和写文件统一在一个有序流程中完成。
+    return _finalize_loop_validation_results(
+        source_frame=df,
+        config=cfg,
+        validation_range=validation_range,
+        result_frame=result_frame,
+        diagnostics_frame=diagnostics_frame,
+        regime_options=_RegimePostprocessOptions(
+            enabled=regime_postprocess,
             state_columns=regime_postprocess_state_columns,
             history_window=regime_postprocess_history_window,
             min_history=regime_postprocess_min_history,
             flip_below=regime_postprocess_flip_below,
             max_flip_rate=regime_postprocess_max_flip_rate,
-        )
-        output_start_trade_date = int(
-            base["date"].iloc[output_first_candidate].strftime("%Y%m%d")
-        )
-        output_end_trade_date = int(
-            base["date"].iloc[last_candidate].strftime("%Y%m%d")
-        )
-        output_date_mask = result_frame["trade_date"].between(
-            output_start_trade_date,
-            output_end_trade_date,
-        )
-        result_frame = result_frame.loc[output_date_mask].reset_index(drop=True)
-        postprocess_diagnostics = postprocess_diagnostics.loc[
-            postprocess_diagnostics["trade_date"].between(
-                output_start_trade_date,
-                output_end_trade_date,
-            )
-        ].reset_index(drop=True)
-        if not diagnostics_frame.empty:
-            diagnostics_frame = diagnostics_frame.loc[
-                diagnostics_frame["trade_date"].between(
-                    output_start_trade_date,
-                    output_end_trade_date,
-                )
-            ].reset_index(drop=True)
-        if regime_postprocess_diagnostics_output_path:
-            postprocess_diagnostics.to_csv(
-                regime_postprocess_diagnostics_output_path,
-                index=False,
-                encoding="utf-8-sig",
-            )
-        postprocess_extra = postprocess_diagnostics.drop(
-            columns=[
-                "original_correct",
-                "postprocess_correct",
-            ],
-            errors="ignore",
-        )
-        if diagnostics_frame.empty:
-            diagnostics_frame = postprocess_extra.copy()
-        else:
-            diagnostics_frame = diagnostics_frame.merge(
-                postprocess_extra,
-                on="trade_date",
-                how="left",
-            )
-        final_by_date = result_frame.set_index("trade_date")
-        for column in ("predicted_pct_change", "real_pct_change", "correct"):
-            diagnostics_frame[column] = diagnostics_frame["trade_date"].map(
-                final_by_date[column]
-            )
-        diagnostics_frame["predicted_label"] = (
-            diagnostics_frame["predicted_pct_change"] > 0
-        ).astype(int)
-        diagnostics_frame["real_label"] = (
-            diagnostics_frame["real_pct_change"] > 0
-        ).astype(int)
-
-    if output_path:
-        result_frame.to_csv(output_path, index=False, encoding="utf-8-sig")
-    if diagnostics_output_path:
-        diagnostics_frame.to_csv(
-            diagnostics_output_path,
-            index=False,
-            encoding="utf-8-sig",
-        )
-    if confidence_output_path or confidence_summary_path:
-        if diagnostics_frame.empty:
-            diagnostics_frame = _build_minimal_diagnostics(result_frame)
-        high_confidence_frame, confidence_summary = _build_high_confidence_outputs(
-            result_frame=result_frame,
-            diagnostics_frame=diagnostics_frame,
+            diagnostics_output_path=(
+                regime_postprocess_diagnostics_output_path
+            ),
+        ),
+        calibration_options=_ConfidenceCalibrationOptions(
+            bin_edges=confidence_calibration_bin_edges,
+            window=confidence_calibration_window,
+            min_rows=confidence_calibration_min_rows,
+            method=confidence_calibration_method,
+            compare_windows=confidence_calibration_compare_windows,
+            rolling_windows=rolling_windows,
+            rolling_output_path=rolling_confidence_output_path,
+            comparison_output_path=(
+                rolling_confidence_comparison_output_path
+            ),
+        ),
+        high_confidence_options=_HighConfidenceOptions(
             min_base_calibration=high_confidence_min_base_calibration,
             min_veto_state_accuracy=high_confidence_min_veto_state_accuracy,
             max_veto_state_rows=high_confidence_max_veto_state_rows,
+        ),
+        output_paths=_LoopOutputPaths(
+            result=output_path,
+            diagnostics=diagnostics_output_path,
+            high_confidence=confidence_output_path,
+            high_confidence_summary=confidence_summary_path,
+            confidence_calibration=confidence_calibration_output_path,
+            confidence_calibration_summary=(
+                confidence_calibration_summary_path
+            ),
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# 循环验证后处理与输出
+# ---------------------------------------------------------------------------
+
+
+def _finalize_loop_validation_results(
+    *,
+    source_frame: pd.DataFrame,
+    config: DirectionPredictionConfig,
+    validation_range: _LoopValidationRange,
+    result_frame: pd.DataFrame,
+    diagnostics_frame: pd.DataFrame,
+    regime_options: _RegimePostprocessOptions,
+    calibration_options: _ConfidenceCalibrationOptions,
+    high_confidence_options: _HighConfidenceOptions,
+    output_paths: _LoopOutputPaths,
+) -> pd.DataFrame:
+    result_frame, diagnostics_frame, postprocess_diagnostics = (
+        _apply_loop_regime_postprocess(
+            source_frame=source_frame,
+            config=config,
+            result_frame=result_frame,
+            diagnostics_frame=diagnostics_frame,
+            options=regime_options,
         )
-        if confidence_output_path:
-            high_confidence_frame.to_csv(
-                confidence_output_path,
-                index=False,
-                encoding="utf-8-sig",
-            )
-        if confidence_summary_path:
-            confidence_summary.to_csv(
-                confidence_summary_path,
-                index=False,
-                encoding="utf-8-sig",
-            )
+    )
+    result_frame, rolling_comparison = _apply_loop_confidence_calibration(
+        result_frame=result_frame,
+        validation_range=validation_range,
+        options=calibration_options,
+    )
+    result_frame, diagnostics_frame = _trim_loop_validation_frames(
+        result_frame=result_frame,
+        diagnostics_frame=diagnostics_frame,
+        validation_range=validation_range,
+    )
+    _write_loop_validation_outputs(
+        result_frame=result_frame,
+        diagnostics_frame=diagnostics_frame,
+        postprocess_diagnostics=postprocess_diagnostics,
+        rolling_comparison=rolling_comparison,
+        validation_range=validation_range,
+        regime_options=regime_options,
+        calibration_options=calibration_options,
+        high_confidence_options=high_confidence_options,
+        output_paths=output_paths,
+    )
     return result_frame
+
+
+def _apply_loop_regime_postprocess(
+    *,
+    source_frame: pd.DataFrame,
+    config: DirectionPredictionConfig,
+    result_frame: pd.DataFrame,
+    diagnostics_frame: pd.DataFrame,
+    options: _RegimePostprocessOptions,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    if not options.enabled:
+        return result_frame, diagnostics_frame, pd.DataFrame()
+
+    regime_config = replace(config, external_feature_mode="all")
+    regime_base = _normalize_market_frame(source_frame, regime_config)
+    regime_source = _build_regime_postprocess_frame(
+        result_frame=result_frame,
+        base=regime_base,
+        diagnostics_frame=diagnostics_frame,
+    )
+    result_frame, postprocess_diagnostics = _apply_regime_postprocess(
+        regime_source,
+        state_columns=options.state_columns,
+        history_window=options.history_window,
+        min_history=options.min_history,
+        flip_below=options.flip_below,
+        max_flip_rate=options.max_flip_rate,
+    )
+    postprocess_extra = postprocess_diagnostics.drop(
+        columns=["original_correct", "postprocess_correct"],
+        errors="ignore",
+    )
+    if diagnostics_frame.empty:
+        diagnostics_frame = postprocess_extra.copy()
+    else:
+        diagnostics_frame = diagnostics_frame.merge(
+            postprocess_extra,
+            on="trade_date",
+            how="left",
+        )
+    return result_frame, diagnostics_frame, postprocess_diagnostics
+
+
+def _apply_loop_confidence_calibration(
+    *,
+    result_frame: pd.DataFrame,
+    validation_range: _LoopValidationRange,
+    options: _ConfidenceCalibrationOptions,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if not options.rolling_windows:
+        return result_frame, pd.DataFrame()
+
+    selected_window: int | None = None
+    comparison = pd.DataFrame()
+    if options.compare_windows:
+        comparison, rolling_frames = compare_rolling_confidence_calibration(
+            result_frame,
+            windows=options.rolling_windows,
+            min_rows=options.min_rows,
+            method=options.method,
+            evaluation_start_trade_date=validation_range.output_start_trade_date,
+            evaluation_end_trade_date=validation_range.output_end_trade_date,
+            bin_edges=options.bin_edges,
+        )
+        selected_rows = comparison.loc[comparison["selected"]]
+        if not selected_rows.empty:
+            selected_window = int(selected_rows.iloc[0]["window"])
+    else:
+        rolling_frames = {
+            window: _apply_rolling_confidence_calibration(
+                result_frame,
+                window=window,
+                min_rows=options.min_rows,
+                method=options.method,
+            )
+            for window in options.rolling_windows
+        }
+
+    primary_window = (
+        selected_window
+        if selected_window is not None
+        else int(options.window)
+        if options.window is not None and int(options.window) > 0
+        else options.rolling_windows[0]
+    )
+    return rolling_frames[primary_window], comparison
+
+
+def _trim_loop_validation_frames(
+    *,
+    result_frame: pd.DataFrame,
+    diagnostics_frame: pd.DataFrame,
+    validation_range: _LoopValidationRange,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    result_frame = result_frame.loc[
+        result_frame["trade_date"].between(
+            validation_range.output_start_trade_date,
+            validation_range.output_end_trade_date,
+        )
+    ].reset_index(drop=True)
+    if diagnostics_frame.empty:
+        return result_frame, diagnostics_frame
+
+    diagnostics_frame = diagnostics_frame.loc[
+        diagnostics_frame["trade_date"].between(
+            validation_range.output_start_trade_date,
+            validation_range.output_end_trade_date,
+        )
+    ].reset_index(drop=True)
+    final_by_date = result_frame.set_index("trade_date")
+    synchronized_columns = (
+        "predicted_pct_change",
+        "confidence",
+        "calibrated_confidence",
+        "real_pct_change",
+        "correct",
+    )
+    for column in synchronized_columns:
+        if column in final_by_date.columns:
+            diagnostics_frame[column] = diagnostics_frame["trade_date"].map(
+                final_by_date[column]
+            )
+    diagnostics_frame["predicted_label"] = (
+        diagnostics_frame["predicted_pct_change"] > 0
+    ).astype(int)
+    diagnostics_frame["real_label"] = (
+        diagnostics_frame["real_pct_change"] > 0
+    ).astype(int)
+    return result_frame, diagnostics_frame
+
+
+def _write_loop_validation_outputs(
+    *,
+    result_frame: pd.DataFrame,
+    diagnostics_frame: pd.DataFrame,
+    postprocess_diagnostics: pd.DataFrame,
+    rolling_comparison: pd.DataFrame,
+    validation_range: _LoopValidationRange,
+    regime_options: _RegimePostprocessOptions,
+    calibration_options: _ConfidenceCalibrationOptions,
+    high_confidence_options: _HighConfidenceOptions,
+    output_paths: _LoopOutputPaths,
+) -> None:
+    if regime_options.enabled and regime_options.diagnostics_output_path:
+        visible_postprocess_diagnostics = postprocess_diagnostics.loc[
+            postprocess_diagnostics["trade_date"].between(
+                validation_range.output_start_trade_date,
+                validation_range.output_end_trade_date,
+            )
+        ].reset_index(drop=True)
+        visible_postprocess_diagnostics.to_csv(
+            regime_options.diagnostics_output_path,
+            index=False,
+            encoding="utf-8-sig",
+        )
+    if calibration_options.rolling_output_path and calibration_options.rolling_windows:
+        result_frame.to_csv(
+            calibration_options.rolling_output_path,
+            index=False,
+            encoding="utf-8-sig",
+        )
+    if calibration_options.comparison_output_path and not rolling_comparison.empty:
+        rolling_comparison.to_csv(
+            calibration_options.comparison_output_path,
+            index=False,
+            encoding="utf-8-sig",
+        )
+    if output_paths.result:
+        result_frame.to_csv(output_paths.result, index=False, encoding="utf-8-sig")
+    if output_paths.diagnostics:
+        diagnostics_frame.to_csv(
+            output_paths.diagnostics,
+            index=False,
+            encoding="utf-8-sig",
+        )
+
+    if output_paths.high_confidence or output_paths.high_confidence_summary:
+        report_diagnostics = (
+            diagnostics_frame
+            if not diagnostics_frame.empty
+            else _build_minimal_diagnostics(result_frame)
+        )
+        high_confidence_frame, confidence_summary = _build_high_confidence_outputs(
+            result_frame=result_frame,
+            diagnostics_frame=report_diagnostics,
+            min_base_calibration=high_confidence_options.min_base_calibration,
+            min_veto_state_accuracy=(
+                high_confidence_options.min_veto_state_accuracy
+            ),
+            max_veto_state_rows=high_confidence_options.max_veto_state_rows,
+        )
+        if output_paths.high_confidence:
+            high_confidence_frame.to_csv(
+                output_paths.high_confidence,
+                index=False,
+                encoding="utf-8-sig",
+            )
+        if output_paths.high_confidence_summary:
+            confidence_summary.to_csv(
+                output_paths.high_confidence_summary,
+                index=False,
+                encoding="utf-8-sig",
+            )
+
+    if (
+        output_paths.confidence_calibration
+        or output_paths.confidence_calibration_summary
+    ):
+        calibration_by_bin, calibration_summary = confidence_calibration_report(
+            result_frame,
+            bin_edges=calibration_options.bin_edges,
+        )
+        if output_paths.confidence_calibration:
+            calibration_by_bin.to_csv(
+                output_paths.confidence_calibration,
+                index=False,
+                encoding="utf-8-sig",
+            )
+        if output_paths.confidence_calibration_summary:
+            calibration_summary.to_csv(
+                output_paths.confidence_calibration_summary,
+                index=False,
+                encoding="utf-8-sig",
+            )
+
+
+# ---------------------------------------------------------------------------
+# 置信度报告与滚动校准
+# ---------------------------------------------------------------------------
 
 
 def _build_minimal_diagnostics(result_frame: pd.DataFrame) -> pd.DataFrame:
@@ -1332,6 +1783,10 @@ def _build_high_confidence_outputs(
         "real_pct_change",
         "correct",
     ]
+    if "confidence" in result_frame.columns:
+        result_columns.insert(3, "confidence")
+    if "calibrated_confidence" in result_frame.columns:
+        result_columns.insert(4 if "confidence" in result_frame.columns else 3, "calibrated_confidence")
     base = result_frame[result_columns].copy()
     diagnostics = diagnostics_frame.copy()
     if "trade_date" not in diagnostics.columns:
@@ -1418,6 +1873,298 @@ def _confidence_summary_frame(
     )
 
 
+def confidence_calibration_report(
+    result_frame: pd.DataFrame,
+    *,
+    confidence_column: str = "confidence",
+    bin_edges: tuple[float, ...] = SCRIPT_CONFIDENCE_CALIBRATION_BIN_EDGES,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Compare confidence values with realized direction accuracy.
+
+    The calibration table groups predictions by their *predicted* confidence.
+    A well-calibrated confidence score has a bin accuracy close to the bin's
+    mean confidence.  All metrics are computed from realized ``correct``
+    outcomes, so this check is only meaningful for completed validation rows.
+    """
+
+    required = {confidence_column, "correct"}
+    missing = sorted(required.difference(result_frame.columns))
+    if missing:
+        raise ValueError(
+            "Confidence calibration requires columns: " + ", ".join(missing)
+        )
+
+    edges = np.asarray(tuple(float(edge) for edge in bin_edges), dtype=float)
+    if (
+        len(edges) < 2
+        or not np.isfinite(edges).all()
+        or not np.isclose(edges[0], 0.0)
+        or not np.isclose(edges[-1], 1.0)
+        or np.any(np.diff(edges) <= 0.0)
+    ):
+        raise ValueError(
+            "bin_edges must be strictly increasing, finite, and start at 0 and end at 1."
+        )
+
+    confidence = pd.to_numeric(result_frame[confidence_column], errors="coerce")
+    correct = result_frame["correct"].astype("boolean")
+    valid = confidence.notna() & correct.notna()
+    confidence_values = confidence.loc[valid].to_numpy(dtype=float)
+    correct_values = correct.loc[valid].astype(float).to_numpy()
+    if len(confidence_values):
+        if ((confidence_values < 0.0) | (confidence_values > 1.0)).any():
+            raise ValueError("confidence values must be within [0, 1].")
+
+    labels = [
+        f"[{edges[index]:.2f}, {edges[index + 1]:.2f})"
+        for index in range(len(edges) - 1)
+    ]
+    bin_indexes = np.searchsorted(edges, confidence_values, side="right") - 1
+    bin_indexes = np.clip(bin_indexes, 0, len(edges) - 2)
+    bin_rows: list[dict[str, Any]] = []
+    for index, label in enumerate(labels):
+        mask = bin_indexes == index
+        rows = int(mask.sum())
+        mean_confidence = (
+            float(confidence_values[mask].mean()) if rows else np.nan
+        )
+        accuracy = float(correct_values[mask].mean()) if rows else np.nan
+        gap = accuracy - mean_confidence if rows else np.nan
+        bin_rows.append(
+            {
+                "confidence_bin": label,
+                "lower_bound": float(edges[index]),
+                "upper_bound": float(edges[index + 1]),
+                "rows": rows,
+                "mean_confidence": mean_confidence,
+                "direction_accuracy": accuracy,
+                "calibration_gap": gap,
+                "absolute_calibration_gap": abs(gap) if rows else np.nan,
+            }
+        )
+
+    rows_used = len(confidence_values)
+    mean_confidence = (
+        float(confidence_values.mean()) if rows_used else np.nan
+    )
+    direction_accuracy = float(correct_values.mean()) if rows_used else np.nan
+    calibration_gap = (
+        direction_accuracy - mean_confidence if rows_used else np.nan
+    )
+    absolute_gaps = np.asarray(
+        [row["absolute_calibration_gap"] for row in bin_rows if row["rows"]],
+        dtype=float,
+    )
+    weights = np.asarray(
+        [row["rows"] / rows_used for row in bin_rows if row["rows"]],
+        dtype=float,
+    )
+    expected_calibration_error = (
+        float(np.dot(weights, absolute_gaps)) if rows_used else np.nan
+    )
+    max_calibration_error = float(absolute_gaps.max()) if len(absolute_gaps) else np.nan
+    brier_score = (
+        float(np.mean((confidence_values - correct_values) ** 2))
+        if rows_used
+        else np.nan
+    )
+    summary = pd.DataFrame(
+        [
+            {
+                "rows_total": int(len(result_frame)),
+                "rows_used": rows_used,
+                "rows_missing_confidence_or_result": int(len(result_frame) - rows_used),
+                "mean_confidence": mean_confidence,
+                "direction_accuracy": direction_accuracy,
+                "calibration_gap": calibration_gap,
+                "absolute_calibration_gap": abs(calibration_gap)
+                if rows_used
+                else np.nan,
+                "expected_calibration_error": expected_calibration_error,
+                "max_calibration_error": max_calibration_error,
+                "brier_score": brier_score,
+            }
+        ]
+    )
+    return pd.DataFrame(bin_rows), summary
+
+
+def _normalize_confidence_calibration_windows(
+    primary_window: int | None,
+    comparison_windows: tuple[int, ...],
+) -> tuple[int, ...]:
+    windows: list[int] = []
+    if primary_window is not None and int(primary_window) > 0:
+        windows.append(int(primary_window))
+    for window in comparison_windows:
+        normalized = int(window)
+        if normalized <= 0:
+            raise ValueError("confidence calibration windows must be positive.")
+        if normalized not in windows:
+            windows.append(normalized)
+    return tuple(windows)
+
+
+def _apply_rolling_confidence_calibration(
+    result_frame: pd.DataFrame,
+    *,
+    window: int,
+    min_rows: int,
+    method: ConfidenceCalibrationMethod,
+) -> pd.DataFrame:
+    """Fit a confidence-to-correctness mapper using prior rows only."""
+
+    if window < 1:
+        raise ValueError("confidence calibration window must be positive.")
+    if min_rows < 2:
+        raise ValueError("confidence calibration min_rows must be at least 2.")
+    if method not in {"platt", "isotonic"}:
+        raise ValueError("confidence calibration method must be 'platt' or 'isotonic'.")
+    if not {"confidence", "correct"}.issubset(result_frame.columns):
+        raise ValueError(
+            "Rolling confidence calibration requires confidence and correct columns."
+        )
+
+    frame = result_frame.copy().reset_index(drop=True)
+    raw_confidence = pd.to_numeric(frame["confidence"], errors="coerce")
+    calibrated = raw_confidence.to_numpy(dtype=float).copy()
+    fit_rows = np.zeros(len(frame), dtype=int)
+    fallback = np.ones(len(frame), dtype=int)
+    min_fit_rows = min(int(min_rows), int(window))
+
+    for index in range(len(frame)):
+        history = frame.iloc[max(0, index - window) : index]
+        history_confidence = pd.to_numeric(history["confidence"], errors="coerce")
+        history_correct = history["correct"].astype("boolean")
+        valid = history_confidence.notna() & history_correct.notna()
+        fit_rows[index] = int(valid.sum())
+        if fit_rows[index] < min_fit_rows:
+            continue
+
+        x_history = history_confidence.loc[valid].to_numpy(dtype=float)
+        y_history = history_correct.loc[valid].astype(int).to_numpy()
+        if len(np.unique(y_history)) < 2 or not np.isfinite(raw_confidence.iloc[index]):
+            continue
+        try:
+            if method == "platt":
+                calibrator = LogisticRegression(
+                    solver="lbfgs",
+                    C=1.0,
+                    max_iter=200,
+                )
+                calibrator.fit(x_history.reshape(-1, 1), y_history)
+                calibrated[index] = float(
+                    calibrator.predict_proba([[float(raw_confidence.iloc[index])]])[0, 1]
+                )
+            else:
+                calibrator = IsotonicRegression(
+                    y_min=0.0,
+                    y_max=1.0,
+                    out_of_bounds="clip",
+                )
+                calibrator.fit(x_history, y_history)
+                calibrated[index] = float(
+                    calibrator.predict([float(raw_confidence.iloc[index])])[0]
+                )
+        except (ValueError, TypeError):
+            continue
+        fallback[index] = 0
+
+    frame["calibrated_confidence"] = np.clip(calibrated, 0.0, 1.0)
+    frame["confidence_calibration_window"] = int(window)
+    frame["confidence_calibration_method"] = method
+    frame["confidence_calibration_rows"] = fit_rows
+    frame["confidence_calibration_fallback"] = fallback
+    return frame
+
+
+def compare_rolling_confidence_calibration(
+    result_frame: pd.DataFrame,
+    *,
+    windows: tuple[int, ...] = (120, 300, 600),
+    min_rows: int = SCRIPT_CONFIDENCE_CALIBRATION_MIN_ROWS,
+    method: ConfidenceCalibrationMethod = SCRIPT_CONFIDENCE_CALIBRATION_METHOD,
+    evaluation_start_trade_date: int | None = None,
+    evaluation_end_trade_date: int | None = None,
+    bin_edges: tuple[float, ...] = SCRIPT_CONFIDENCE_CALIBRATION_BIN_EDGES,
+) -> tuple[pd.DataFrame, dict[int, pd.DataFrame]]:
+    """Compare rolling calibrators on a later, strictly out-of-sample period."""
+
+    normalized_windows = _normalize_confidence_calibration_windows(None, windows)
+    if not normalized_windows:
+        raise ValueError("At least one confidence calibration window is required.")
+
+    calibrated_frames: dict[int, pd.DataFrame] = {}
+    comparison_rows: list[dict[str, Any]] = []
+    for window in normalized_windows:
+        calibrated_frame = _apply_rolling_confidence_calibration(
+            result_frame,
+            window=window,
+            min_rows=min_rows,
+            method=method,
+        )
+        calibrated_frames[window] = calibrated_frame
+        evaluation_mask = calibrated_frame["confidence_calibration_fallback"].eq(0)
+        if evaluation_start_trade_date is not None:
+            evaluation_mask &= calibrated_frame["trade_date"].ge(
+                int(evaluation_start_trade_date)
+            )
+        if evaluation_end_trade_date is not None:
+            evaluation_mask &= calibrated_frame["trade_date"].le(
+                int(evaluation_end_trade_date)
+            )
+        evaluation_frame = calibrated_frame.loc[evaluation_mask]
+        if evaluation_frame.empty:
+            summary = {
+                "window": int(window),
+                "method": method,
+                "evaluation_rows": 0,
+                "mean_calibrated_confidence": np.nan,
+                "direction_accuracy": np.nan,
+                "calibration_gap": np.nan,
+                "expected_calibration_error": np.nan,
+                "max_calibration_error": np.nan,
+                "brier_score": np.nan,
+            }
+        else:
+            _, metrics = confidence_calibration_report(
+                evaluation_frame,
+                confidence_column="calibrated_confidence",
+                bin_edges=bin_edges,
+            )
+            metric_row = metrics.iloc[0]
+            summary = {
+                "window": int(window),
+                "method": method,
+                "evaluation_rows": int(metric_row["rows_used"]),
+                "mean_calibrated_confidence": float(metric_row["mean_confidence"]),
+                "direction_accuracy": float(metric_row["direction_accuracy"]),
+                "calibration_gap": float(metric_row["calibration_gap"]),
+                "expected_calibration_error": float(
+                    metric_row["expected_calibration_error"]
+                ),
+                "max_calibration_error": float(metric_row["max_calibration_error"]),
+                "brier_score": float(metric_row["brier_score"]),
+            }
+        comparison_rows.append(summary)
+
+    comparison = pd.DataFrame(comparison_rows)
+    comparison["selected"] = False
+    valid = comparison["evaluation_rows"].gt(0)
+    if valid.any():
+        selected_index = (
+            comparison.loc[valid]
+            .sort_values(
+                ["expected_calibration_error", "brier_score", "window"],
+                na_position="last",
+            )
+            .index[0]
+        )
+        comparison.loc[selected_index, "selected"] = True
+    comparison["selection_rule"] = "min_ece_then_brier"
+    return comparison, calibrated_frames
+
+
 def _direction_side_stats(frame: pd.DataFrame) -> dict[str, float | int]:
     """Return long/short hit-rate statistics from a prediction result frame."""
 
@@ -1446,6 +2193,11 @@ def _direction_side_stats(frame: pd.DataFrame) -> dict[str, float | int]:
         "short_correct": short_correct,
         "short_accuracy": float(short_correct / short_rows) if short_rows else np.nan,
     }
+
+
+# ---------------------------------------------------------------------------
+# 历史选择器与状态后处理
+# ---------------------------------------------------------------------------
 
 
 def _historical_selector_decision(
@@ -1572,6 +2324,7 @@ def _build_regime_postprocess_frame(
                 for col in [
                     "predicted_pct_change",
                     "predicted_close",
+                    "confidence",
                     "real_pct_change",
                     "correct",
                 ]
@@ -1715,8 +2468,14 @@ def _apply_regime_postprocess(
         flip = bool(selected_key is not None and projected_flip_rate <= max_flip_rate)
         flip_history.append(flip)
         original_pred = float(row["predicted_pct_change"])
+        original_confidence = float(row.get("confidence", np.nan))
         real = float(row["real_pct_change"])
         predicted_pct_change = -original_pred if flip else original_pred
+        confidence = original_confidence
+        if flip and selected_key is not None:
+            historical_accuracy = float(selected_key["accuracy"])
+            if np.isfinite(historical_accuracy):
+                confidence = float(np.clip(1.0 - historical_accuracy, 0.0, 1.0))
         close = float(row["close"]) if pd.notna(row.get("close", np.nan)) else np.nan
         predicted_close = (
             close * (1.0 + predicted_pct_change)
@@ -1731,6 +2490,7 @@ def _apply_regime_postprocess(
                 "trade_date": int(row["trade_date"]),
                 "predicted_pct_change": predicted_pct_change,
                 "predicted_close": float(predicted_close),
+                "confidence": confidence,
                 "real_pct_change": real,
                 "correct": correct,
             }
@@ -1745,6 +2505,8 @@ def _apply_regime_postprocess(
                 "postprocess_correct": correct,
                 "original_predicted_pct_change": original_pred,
                 "postprocess_predicted_pct_change": predicted_pct_change,
+                "original_confidence": original_confidence,
+                "postprocess_confidence": confidence,
                 "original_prediction_side": row["prediction_side"],
                 "postprocess_prediction_side": (
                     "long" if predicted_pct_change > 0 else "short"
@@ -1887,6 +2649,11 @@ def _add_regime_alignment_state(
     labels[positive_count.eq(valid_count) & valid_count.gt(0)] = "all_positive"
     labels[negative_count.eq(valid_count) & valid_count.gt(0)] = "all_negative"
     frame[output_col] = labels
+
+
+# ---------------------------------------------------------------------------
+# 信号引擎与收益控制
+# ---------------------------------------------------------------------------
 
 
 def prediction_to_dict(fitted: FittedDirectionModel) -> dict[str, Any]:
@@ -2965,6 +3732,36 @@ def _apply_recent_failure_guard(
     return float(predicted_return), diagnostics
 
 
+def _rule_signal_confidence(signal: RuleSignal) -> float:
+    """Estimate the historical reliability of the direction actually returned."""
+
+    confidence = float(np.clip(signal.calibration_accuracy, 0.0, 1.0))
+    if bool(signal.diagnostics.get("veto_applied", 0)):
+        confidence = 1.0 - confidence
+    return float(confidence)
+
+
+def _confidence_after_failure_guard(
+    confidence: float,
+    diagnostics: dict[str, Any],
+) -> float:
+    """Keep confidence aligned when the recent-failure guard reverses a signal."""
+
+    if not bool(diagnostics.get("recent_failure_guard_applied", 0)):
+        return float(np.clip(confidence, 0.0, 1.0))
+    recent_accuracy = float(
+        diagnostics.get("recent_failure_guard_accuracy", np.nan)
+    )
+    if np.isfinite(recent_accuracy):
+        return float(np.clip(1.0 - recent_accuracy, 0.0, 1.0))
+    return float(np.clip(1.0 - confidence, 0.0, 1.0))
+
+
+# ---------------------------------------------------------------------------
+# 行情数据准备与神经网络训练
+# ---------------------------------------------------------------------------
+
+
 def _timeseries_cv_threshold(
     *,
     prepared: PreparedMarketData,
@@ -3336,8 +4133,8 @@ def _build_features(
     features["range_pct"] = (high - low) / pre_close
     features["close_position"] = (close - low) / (high - low).replace(0, np.nan)
 
-    # Features are evaluated after the current close, so same-day OHLCV is valid
-    # for predicting the next trading day. Rule thresholds still use shift(1).
+    # 特征在当前收盘后计算，因此当天 OHLCV 可以用于预测下一个交易日；
+    # 规则阈值仍然使用 shift(1) 避免未来信息。
     for window in (5, 10):
         sma = close.rolling(window).mean()
         ema = close.ewm(span=window, adjust=False, min_periods=window).mean()
@@ -3704,6 +4501,11 @@ def _estimate_directional_return(
     return float(base * shrink)
 
 
+# ---------------------------------------------------------------------------
+# 运行时与序列化通用工具
+# ---------------------------------------------------------------------------
+
+
 def _direction_sign(value: float) -> int:
     return 1 if value > 0 else 0
 
@@ -3789,12 +4591,26 @@ def _parse_float_tuple(value: str | tuple[float, ...] | list[float]) -> tuple[fl
     return tuple(float(part) for part in parts)
 
 
+def _parse_int_tuple(value: str | tuple[int, ...] | list[int]) -> tuple[int, ...]:
+    if isinstance(value, tuple):
+        return tuple(int(item) for item in value)
+    if isinstance(value, list):
+        return tuple(int(item) for item in value)
+    parts = [part.strip() for part in str(value).split(",") if part.strip()]
+    return tuple(int(part) for part in parts)
+
+
 def _parse_string_tuple(value: str | tuple[str, ...] | list[str]) -> tuple[str, ...]:
     if isinstance(value, tuple):
         return tuple(str(item).strip() for item in value if str(item).strip())
     if isinstance(value, list):
         return tuple(str(item).strip() for item in value if str(item).strip())
     return tuple(part.strip() for part in str(value).split(",") if part.strip())
+
+
+# ---------------------------------------------------------------------------
+# 命令行接口
+# ---------------------------------------------------------------------------
 
 
 def _default_csv_path() -> str:
@@ -3817,10 +4633,18 @@ def _default_csv_path() -> str:
     )
 
 
-def _main() -> None:
+def _build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Fit the standalone BiLSTM-Attention direction predictor."
     )
+    _add_runtime_cli_arguments(parser)
+    _add_loop_and_confidence_cli_arguments(parser)
+    _add_signal_engine_cli_arguments(parser)
+    _add_postprocess_cli_arguments(parser)
+    return parser
+
+
+def _add_runtime_cli_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "csv",
         nargs="?",
@@ -3833,7 +4657,7 @@ def _main() -> None:
     )
     parser.add_argument(
         "--mode",
-        choices=["predict", "loop_validate", "walk_forward"],
+        choices=_CLI_MODES,
         default=SCRIPT_MODE,
     )
     parser.add_argument("--encoding", default=SCRIPT_ENCODING)
@@ -3869,6 +4693,11 @@ def _main() -> None:
     )
     parser.add_argument("--test-size", type=int, default=SCRIPT_TEST_SIZE)
     parser.add_argument("--max-splits", type=int, default=SCRIPT_MAX_SPLITS)
+
+
+def _add_loop_and_confidence_cli_arguments(
+    parser: argparse.ArgumentParser,
+) -> None:
     parser.add_argument("--periods", type=int, default=SCRIPT_PERIODS)
     parser.add_argument(
         "--latest-periods",
@@ -3884,6 +4713,50 @@ def _main() -> None:
     parser.add_argument(
         "--confidence-summary-output",
         default=SCRIPT_CONFIDENCE_SUMMARY_PATH,
+    )
+    parser.add_argument(
+        "--confidence-calibration-output",
+        default=SCRIPT_CONFIDENCE_CALIBRATION_OUTPUT_PATH,
+        help="Write confidence-bin calibration statistics to this CSV path.",
+    )
+    parser.add_argument(
+        "--confidence-calibration-summary-output",
+        default=SCRIPT_CONFIDENCE_CALIBRATION_SUMMARY_PATH,
+        help="Write aggregate confidence calibration metrics to this CSV path.",
+    )
+    parser.add_argument(
+        "--confidence-calibration-window",
+        type=int,
+        default=SCRIPT_CONFIDENCE_CALIBRATION_WINDOW,
+        help="Prior completed predictions used by the rolling confidence calibrator; 0 disables it.",
+    )
+    parser.add_argument(
+        "--confidence-calibration-min-rows",
+        type=int,
+        default=SCRIPT_CONFIDENCE_CALIBRATION_MIN_ROWS,
+        help="Minimum valid prior rows required before fitting a rolling calibrator.",
+    )
+    parser.add_argument(
+        "--confidence-calibration-method",
+        choices=["platt", "isotonic"],
+        default=SCRIPT_CONFIDENCE_CALIBRATION_METHOD,
+    )
+    parser.add_argument(
+        "--confidence-calibration-compare-windows",
+        default=", ".join(
+            str(window) for window in SCRIPT_CONFIDENCE_CALIBRATION_COMPARE_WINDOWS
+        ),
+        help="Comma-separated rolling windows to compare out of sample, e.g. 120,300,600.",
+    )
+    parser.add_argument(
+        "--rolling-confidence-output",
+        default=SCRIPT_ROLLING_CONFIDENCE_OUTPUT_PATH,
+        help="Write the selected rolling-calibrated confidence result to this CSV path.",
+    )
+    parser.add_argument(
+        "--rolling-confidence-comparison-output",
+        default=SCRIPT_ROLLING_CONFIDENCE_COMPARISON_OUTPUT_PATH,
+        help="Write rolling-window ECE/Brier comparison to this CSV path.",
     )
     parser.add_argument(
         "--high-confidence-min-base-calibration",
@@ -3904,18 +4777,12 @@ def _main() -> None:
             "high-confidence subset. Use a negative value to disable it."
         ),
     )
+
+
+def _add_signal_engine_cli_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--signal-engine",
-        choices=[
-            "bilstm",
-            "volatility_rule",
-            "state_veto_rule",
-            "stability_rule",
-            "nested_ml",
-            "hybrid",
-            "calibrated_rule",
-            "historical_selector",
-        ],
+        choices=_SIGNAL_ENGINES,
         default=SCRIPT_SIGNAL_ENGINE,
     )
     parser.add_argument(
@@ -4122,6 +4989,9 @@ def _main() -> None:
         type=float,
         default=SCRIPT_SELECTOR_DISAGREEMENT_EDGE,
     )
+
+
+def _add_postprocess_cli_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--regime-postprocess",
         action="store_true",
@@ -4158,11 +5028,66 @@ def _main() -> None:
     )
     parser.add_argument("--no-progress", action="store_true")
     parser.add_argument("--verbose", action="store_true", default=SCRIPT_VERBOSE)
-    args = parser.parse_args()
 
-    csv_path = args.csv or _default_csv_path()
-    data = pd.read_csv(csv_path, encoding=args.encoding)
-    config = DirectionPredictionConfig(
+
+_LOOP_CLI_PASSTHROUGH_ARGUMENTS = (
+    "start_date",
+    "end_date",
+    "periods",
+    "confidence_calibration_min_rows",
+    "confidence_calibration_method",
+    "signal_engine",
+    "rule_threshold_end_date",
+    "rule_calibration_start_date",
+    "rule_calibration_end_date",
+    "rule_top_k",
+    "volatility_rule_quantile",
+    "nested_rule_threshold_window",
+    "nested_rule_calibration_window",
+    "nested_rule_min_threshold_rows",
+    "nested_rule_min_calibration_rows",
+    "state_veto_window",
+    "state_veto_state_window",
+    "state_veto_min_rows",
+    "state_veto_bad_accuracy",
+    "high_confidence_min_base_calibration",
+    "high_confidence_min_veto_state_accuracy",
+    "stability_rule_long_window",
+    "stability_rule_recent_weight",
+    "stability_rule_min_edge",
+    "stability_rule_top_k",
+    "nested_ml_train_window",
+    "nested_ml_step",
+    "nested_ml_calibration_window",
+    "nested_ml_min_train_rows",
+    "nested_ml_top_k",
+    "return_magnitude_mode",
+    "return_magnitude_window",
+    "return_magnitude_min_rows",
+    "return_magnitude_grid_size",
+    "return_magnitude_clip_low_quantile",
+    "return_magnitude_clip_high_quantile",
+    "recent_failure_guard",
+    "recent_failure_window",
+    "recent_failure_invert_threshold",
+    "recent_failure_short_window",
+    "recent_failure_short_threshold",
+    "selector_window",
+    "selector_min_history",
+    "selector_switch_edge",
+    "selector_disagreement_window",
+    "selector_disagreement_min_history",
+    "selector_disagreement_edge",
+    "regime_postprocess",
+    "regime_postprocess_history_window",
+    "regime_postprocess_min_history",
+    "regime_postprocess_flip_below",
+    "regime_postprocess_max_flip_rate",
+)
+
+
+def _config_from_cli_args(args: argparse.Namespace) -> DirectionPredictionConfig:
+    return DirectionPredictionConfig(
         epochs=args.epochs,
         lookback=args.lookback,
         neutral_band=args.neutral_band,
@@ -4171,148 +5096,189 @@ def _main() -> None:
         technical_feature_mode=args.technical_feature_mode,
         verbose=args.verbose,
     )
-    mode = args.mode
-    if args.loop_validate:
-        mode = "loop_validate"
-    elif args.walk_forward:
-        mode = "walk_forward"
 
+
+def _resolve_cli_mode(args: argparse.Namespace) -> CliMode:
+    if args.loop_validate:
+        return "loop_validate"
+    if args.walk_forward:
+        return "walk_forward"
+    return args.mode
+
+
+def _loop_validation_kwargs_from_cli_args(
+    args: argparse.Namespace,
+    *,
+    output_path: str,
+) -> dict[str, Any]:
+    kwargs = {
+        name: getattr(args, name) for name in _LOOP_CLI_PASSTHROUGH_ARGUMENTS
+    }
+    if args.latest_periods is not None:
+        kwargs.update(
+            start_date=None,
+            end_date=None,
+            periods=args.latest_periods,
+        )
+    kwargs.update(
+        output_path=output_path,
+        diagnostics_output_path=args.diagnostics_output,
+        confidence_output_path=args.confidence_output,
+        confidence_summary_path=args.confidence_summary_output,
+        confidence_calibration_output_path=args.confidence_calibration_output,
+        confidence_calibration_summary_path=(
+            args.confidence_calibration_summary_output
+        ),
+        confidence_calibration_window=(
+            args.confidence_calibration_window
+            if args.confidence_calibration_window is not None
+            and args.confidence_calibration_window > 0
+            else None
+        ),
+        confidence_calibration_compare_windows=_parse_int_tuple(
+            args.confidence_calibration_compare_windows
+        ),
+        rolling_confidence_output_path=args.rolling_confidence_output,
+        rolling_confidence_comparison_output_path=(
+            args.rolling_confidence_comparison_output
+        ),
+        progress=not args.no_progress,
+        state_veto_quantiles=_parse_float_tuple(args.state_veto_quantiles),
+        high_confidence_max_veto_state_rows=(
+            args.high_confidence_max_veto_state_rows
+            if args.high_confidence_max_veto_state_rows is not None
+            and args.high_confidence_max_veto_state_rows >= 0
+            else None
+        ),
+        recent_failure_degrade_threshold=(
+            args.recent_failure_degrade_threshold
+            if args.recent_failure_degrade_threshold is not None
+            else args.recent_failure_threshold
+        ),
+        regime_postprocess_diagnostics_output_path=(
+            args.regime_postprocess_diagnostics_output
+        ),
+        regime_postprocess_state_columns=_parse_string_tuple(
+            args.regime_postprocess_state_columns
+        ),
+    )
+    return kwargs
+
+
+def _print_loop_validation_summary(
+    result: pd.DataFrame,
+    *,
+    output_path: str,
+) -> None:
+    print(
+        result.to_string(
+            index=False,
+            formatters={
+                "confidence": lambda value: f"{value:.2%}",
+                "calibrated_confidence": lambda value: f"{value:.2%}",
+            },
+        )
+    )
+    side_stats = _direction_side_stats(result)
+    print(f"saved_to={output_path}", file=sys.stderr)
+    print(f"direction_accuracy={result['correct'].mean():.6f}", file=sys.stderr)
+    print(
+        "long_accuracy="
+        f"{side_stats['long_accuracy']:.6f} "
+        f"({side_stats['long_correct']}/{side_stats['long_rows']})",
+        file=sys.stderr,
+    )
+    print(
+        "short_accuracy="
+        f"{side_stats['short_accuracy']:.6f} "
+        f"({side_stats['short_correct']}/{side_stats['short_rows']})",
+        file=sys.stderr,
+    )
+    _, calibration_summary = confidence_calibration_report(result)
+    calibration_metrics = calibration_summary.iloc[0]
+    print(
+        "confidence_calibration="
+        f"mean={calibration_metrics['mean_confidence']:.6f} "
+        f"direction_accuracy={calibration_metrics['direction_accuracy']:.6f} "
+        f"ece={calibration_metrics['expected_calibration_error']:.6f} "
+        f"brier={calibration_metrics['brier_score']:.6f}",
+        file=sys.stderr,
+    )
+    if "calibrated_confidence" not in result.columns:
+        return
+
+    _, rolling_summary = confidence_calibration_report(
+        result,
+        confidence_column="calibrated_confidence",
+    )
+    rolling_metrics = rolling_summary.iloc[0]
+    selected_window = int(result["confidence_calibration_window"].iloc[0])
+    print(
+        "rolling_confidence_calibration="
+        f"window={selected_window} "
+        f"ece={rolling_metrics['expected_calibration_error']:.6f} "
+        f"brier={rolling_metrics['brier_score']:.6f}",
+        file=sys.stderr,
+    )
+
+
+def _run_loop_validation_cli(
+    data: pd.DataFrame,
+    config: DirectionPredictionConfig,
+    args: argparse.Namespace,
+) -> None:
+    output_path = args.output or "drp_feim_prediction_results.csv"
+    result = loop_validate_prediction_results(
+        data,
+        config=config,
+        **_loop_validation_kwargs_from_cli_args(args, output_path=output_path),
+    )
+    _print_loop_validation_summary(result, output_path=output_path)
+
+
+def _run_walk_forward_cli(
+    data: pd.DataFrame,
+    config: DirectionPredictionConfig,
+    args: argparse.Namespace,
+) -> None:
+    result = walk_forward_validate(
+        data,
+        config=config,
+        initial_train_fraction=args.initial_train_fraction,
+        test_size=args.test_size,
+        max_splits=args.max_splits,
+    )
+    print(result.to_string(index=False))
+
+
+def _run_predict_cli(
+    data: pd.DataFrame,
+    config: DirectionPredictionConfig,
+) -> None:
+    result = predict_next_day(data, config=config)
+    print(
+        json.dumps(
+            _json_sanitize(result),
+            ensure_ascii=False,
+            indent=2,
+            default=_json_default,
+            allow_nan=False,
+        )
+    )
+
+
+def _main(argv: list[str] | None = None) -> None:
+    args = _build_argument_parser().parse_args(argv)
+    csv_path = args.csv or _default_csv_path()
+    data = pd.read_csv(csv_path, encoding=args.encoding)
+    config = _config_from_cli_args(args)
+    mode = _resolve_cli_mode(args)
     if mode == "loop_validate":
-        output_path = args.output or "drp_feim_prediction_results.csv"
-        start_date = args.start_date
-        end_date = args.end_date
-        periods = args.periods
-        if args.latest_periods is not None:
-            start_date = None
-            end_date = None
-            periods = args.latest_periods
-        result = loop_validate_prediction_results(
-            data,
-            config=config,
-            start_date=start_date,
-            end_date=end_date,
-            periods=periods,
-            output_path=output_path,
-            diagnostics_output_path=args.diagnostics_output,
-            confidence_output_path=args.confidence_output,
-            confidence_summary_path=args.confidence_summary_output,
-            progress=not args.no_progress,
-            signal_engine=args.signal_engine,
-            rule_threshold_end_date=args.rule_threshold_end_date,
-            rule_calibration_start_date=args.rule_calibration_start_date,
-            rule_calibration_end_date=args.rule_calibration_end_date,
-            rule_top_k=args.rule_top_k,
-            volatility_rule_quantile=args.volatility_rule_quantile,
-            nested_rule_threshold_window=args.nested_rule_threshold_window,
-            nested_rule_calibration_window=args.nested_rule_calibration_window,
-            nested_rule_min_threshold_rows=args.nested_rule_min_threshold_rows,
-            nested_rule_min_calibration_rows=args.nested_rule_min_calibration_rows,
-            state_veto_window=args.state_veto_window,
-            state_veto_state_window=args.state_veto_state_window,
-            state_veto_min_rows=args.state_veto_min_rows,
-            state_veto_bad_accuracy=args.state_veto_bad_accuracy,
-            state_veto_quantiles=_parse_float_tuple(args.state_veto_quantiles),
-            high_confidence_min_base_calibration=(
-                args.high_confidence_min_base_calibration
-            ),
-            high_confidence_min_veto_state_accuracy=(
-                args.high_confidence_min_veto_state_accuracy
-            ),
-            high_confidence_max_veto_state_rows=(
-                args.high_confidence_max_veto_state_rows
-                if args.high_confidence_max_veto_state_rows is not None
-                and args.high_confidence_max_veto_state_rows >= 0
-                else None
-            ),
-            stability_rule_long_window=args.stability_rule_long_window,
-            stability_rule_recent_weight=args.stability_rule_recent_weight,
-            stability_rule_min_edge=args.stability_rule_min_edge,
-            stability_rule_top_k=args.stability_rule_top_k,
-            nested_ml_train_window=args.nested_ml_train_window,
-            nested_ml_step=args.nested_ml_step,
-            nested_ml_calibration_window=args.nested_ml_calibration_window,
-            nested_ml_min_train_rows=args.nested_ml_min_train_rows,
-            nested_ml_top_k=args.nested_ml_top_k,
-            return_magnitude_mode=args.return_magnitude_mode,
-            return_magnitude_window=args.return_magnitude_window,
-            return_magnitude_min_rows=args.return_magnitude_min_rows,
-            return_magnitude_grid_size=args.return_magnitude_grid_size,
-            return_magnitude_clip_low_quantile=(
-                args.return_magnitude_clip_low_quantile
-            ),
-            return_magnitude_clip_high_quantile=(
-                args.return_magnitude_clip_high_quantile
-            ),
-            recent_failure_guard=args.recent_failure_guard,
-            recent_failure_window=args.recent_failure_window,
-            recent_failure_degrade_threshold=(
-                args.recent_failure_degrade_threshold
-                if args.recent_failure_degrade_threshold is not None
-                else args.recent_failure_threshold
-            ),
-            recent_failure_invert_threshold=args.recent_failure_invert_threshold,
-            recent_failure_short_window=args.recent_failure_short_window,
-            recent_failure_short_threshold=args.recent_failure_short_threshold,
-            selector_window=args.selector_window,
-            selector_min_history=args.selector_min_history,
-            selector_switch_edge=args.selector_switch_edge,
-            selector_disagreement_window=args.selector_disagreement_window,
-            selector_disagreement_min_history=(
-                args.selector_disagreement_min_history
-            ),
-            selector_disagreement_edge=args.selector_disagreement_edge,
-            regime_postprocess=args.regime_postprocess,
-            regime_postprocess_diagnostics_output_path=(
-                args.regime_postprocess_diagnostics_output
-            ),
-            regime_postprocess_state_columns=_parse_string_tuple(
-                args.regime_postprocess_state_columns
-            ),
-            regime_postprocess_history_window=(
-                args.regime_postprocess_history_window
-            ),
-            regime_postprocess_min_history=args.regime_postprocess_min_history,
-            regime_postprocess_flip_below=args.regime_postprocess_flip_below,
-            regime_postprocess_max_flip_rate=(
-                args.regime_postprocess_max_flip_rate
-            ),
-        )
-        print(result.to_string(index=False))
-        side_stats = _direction_side_stats(result)
-        print(f"saved_to={output_path}", file=sys.stderr)
-        print(f"direction_accuracy={result['correct'].mean():.6f}", file=sys.stderr)
-        print(
-            "long_accuracy="
-            f"{side_stats['long_accuracy']:.6f} "
-            f"({side_stats['long_correct']}/{side_stats['long_rows']})",
-            file=sys.stderr,
-        )
-        print(
-            "short_accuracy="
-            f"{side_stats['short_accuracy']:.6f} "
-            f"({side_stats['short_correct']}/{side_stats['short_rows']})",
-            file=sys.stderr,
-        )
+        _run_loop_validation_cli(data, config, args)
     elif mode == "walk_forward":
-        result = walk_forward_validate(
-            data,
-            config=config,
-            initial_train_fraction=args.initial_train_fraction,
-            test_size=args.test_size,
-            max_splits=args.max_splits,
-        )
-        print(result.to_string(index=False))
+        _run_walk_forward_cli(data, config, args)
     else:
-        result = predict_next_day(data, config=config)
-        print(
-            json.dumps(
-                _json_sanitize(result),
-                ensure_ascii=False,
-                indent=2,
-                default=_json_default,
-                allow_nan=False,
-            )
-        )
+        _run_predict_cli(data, config)
 
 
 if __name__ == "__main__":
