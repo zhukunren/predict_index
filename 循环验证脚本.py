@@ -372,20 +372,28 @@ _INTERNAL_RULE_COLUMNS = (
 _EXTERNAL_RULE_SUFFIXES = (
     "_ret1",
     "_ret1_lag1",
+    "_ret1_lag2",
     "_ret5",
     "_ret5_lag1",
+    "_ret5_lag2",
     "_pct_chg",
     "_pct_chg_lag1",
+    "_pct_chg_lag2",
     "_gap",
     "_gap_lag1",
+    "_gap_lag2",
     "_intraday",
     "_intraday_lag1",
+    "_intraday_lag2",
     "_range",
     "_range_lag1",
+    "_range_lag2",
     "_vol20",
     "_vol20_lag1",
+    "_vol20_lag2",
     "_vol_chg",
     "_vol_chg_lag1",
+    "_vol_chg_lag2",
     "_z60",
 )
 _MONEYFLOW_RULE_PREFIXES = (
@@ -402,6 +410,29 @@ _CORE_TECHNICAL_COLUMNS = {
     "bollinger_width",
     "volume",
 }
+
+_PUBLIC_OUTPUT_COLUMN_RENAMES = {
+    "trade_date": "signal_date",
+    "predicted_pct_change": "predicted_next_day_return",
+    "predicted_close": "predicted_next_day_close",
+    "real_pct_change": "next_day_real_return",
+    "correct": "direction_correct",
+    "raw_predicted_pct_change": "raw_predicted_next_day_return",
+    "pre_guard_predicted_pct_change": "pre_guard_predicted_next_day_return",
+    "raw_correct": "raw_direction_correct",
+    "original_predicted_pct_change": "original_predicted_next_day_return",
+    "postprocess_predicted_pct_change": "postprocess_predicted_next_day_return",
+    "original_correct": "original_direction_correct",
+    "postprocess_correct": "postprocess_direction_correct",
+}
+_PUBLIC_RESULT_COLUMNS = (
+    "signal_date",
+    "target_trade_date",
+    "predicted_next_day_return",
+    "predicted_next_day_close",
+    "next_day_real_return",
+    "direction_correct",
+)
 
 
 def predict_next_day(
@@ -711,13 +742,14 @@ def loop_validate_prediction_results(
 ) -> pd.DataFrame:
     """Loop over trading days and output columns aligned to prediction_results.csv.
 
-    Output columns are exactly:
+    Public output columns are exactly:
 
-    trade_date,predicted_pct_change,predicted_close,real_pct_change,correct
+    signal_date,target_trade_date,predicted_next_day_return,
+    predicted_next_day_close,next_day_real_return,direction_correct
 
-    For each output row, the model is trained only on rows up to and including
-    ``trade_date``. The row's ``real_pct_change`` is the next trading day's
-    realized close-to-close return, and ``correct`` checks only direction sign.
+    ``signal_date`` is the date on which the prediction is made, while
+    ``target_trade_date`` is the following trading day whose return is evaluated.
+    Return columns contain decimal returns (0.01 means 1%), not percentage points.
     """
 
     cfg = config or DirectionPredictionConfig()
@@ -745,6 +777,22 @@ def loop_validate_prediction_results(
 
     if first_candidate > last_candidate:
         raise ValueError("No validation dates remain after applying filters.")
+
+    output_first_candidate = first_candidate
+    if regime_postprocess:
+        normalized_regime_history_window = max(
+            1,
+            int(regime_postprocess_history_window),
+        )
+        regime_warmup_span = max(
+            1,
+            normalized_regime_history_window * 2,
+            int(regime_postprocess_min_history),
+        )
+        first_candidate = max(
+            cfg.lookback + cfg.min_train_sequences,
+            output_first_candidate - regime_warmup_span,
+        )
 
     if signal_engine not in {
         "bilstm",
@@ -996,11 +1044,20 @@ def loop_validate_prediction_results(
             }
         )
 
-    if recent_failure_guard:
-        warmup_span = int(max(1, recent_failure_window, recent_failure_short_window))
-        if signal_engine == "historical_selector":
+    needs_selector_warmup = signal_engine == "historical_selector"
+    if recent_failure_guard or needs_selector_warmup:
+        warmup_span = 0
+        if recent_failure_guard:
             warmup_span = max(
                 warmup_span,
+                1,
+                int(recent_failure_window),
+                int(recent_failure_short_window),
+            )
+        if needs_selector_warmup:
+            warmup_span = max(
+                warmup_span,
+                1,
                 int(selector_window),
                 int(selector_disagreement_window),
             )
@@ -1014,20 +1071,22 @@ def loop_validate_prediction_results(
                 / base["close"].iloc[warmup_idx]
                 - 1.0
             )
-            raw_direction_history.append(
-                bool(
-                    _direction_sign(warmup_predicted_pct_change)
-                    == _direction_sign(warmup_real_pct_change)
+            if recent_failure_guard:
+                raw_direction_history.append(
+                    bool(
+                        _direction_sign(warmup_predicted_pct_change)
+                        == _direction_sign(warmup_real_pct_change)
+                    )
                 )
-            )
             _record_selector_history(
                 idx=warmup_idx,
                 selector_candidate_signals=warmup_selector_signals,
                 real_pct_change=warmup_real_pct_change,
             )
 
-    total = last_candidate - first_candidate + 1
-    for offset, idx in enumerate(range(first_candidate, last_candidate + 1), start=1):
+    output_total = last_candidate - output_first_candidate + 1
+    processing_warmup_rows = output_first_candidate - first_candidate
+    for idx in range(first_candidate, last_candidate + 1):
         signal, predicted_pct_change, selector_diagnostics, selector_candidate_signals = (
             _compute_loop_signal(idx)
         )
@@ -1089,11 +1148,12 @@ def loop_validate_prediction_results(
                 {
                     "trade_date": int(base["date"].iloc[idx].strftime("%Y%m%d")),
                     "signal_engine": signal_engine,
-                    "predicted_label": (
+                    "raw_predicted_label": (
                         int(signal.predicted_label)
                         if signal is not None
-                        else int(predicted_pct_change > 0)
+                        else int(raw_predicted_pct_change > 0)
                     ),
+                    "predicted_label": int(predicted_pct_change > 0),
                     "real_label": real_label,
                     "raw_predicted_pct_change": raw_predicted_pct_change,
                     "pre_guard_predicted_pct_change": pre_guard_predicted_pct_change,
@@ -1113,10 +1173,13 @@ def loop_validate_prediction_results(
                     **diagnostics,
                 }
             )
-        if progress:
-            accuracy = float(np.mean([row["correct"] for row in rows]))
+        if progress and idx >= output_first_candidate:
+            output_offset = idx - output_first_candidate + 1
+            visible_rows = rows[processing_warmup_rows:]
+            accuracy = float(np.mean([row["correct"] for row in visible_rows]))
             print(
-                f"[{signal_engine}] [{offset}/{total}] {rows[-1]['trade_date']} "
+                f"[{signal_engine}] [{output_offset}/{output_total}] "
+                f"{rows[-1]['trade_date']} "
                 f"correct={correct} running_accuracy={accuracy:.4f}",
                 file=sys.stderr,
                 flush=True,
@@ -1153,6 +1216,30 @@ def loop_validate_prediction_results(
             flip_below=regime_postprocess_flip_below,
             max_flip_rate=regime_postprocess_max_flip_rate,
         )
+        output_start_trade_date = int(
+            base["date"].iloc[output_first_candidate].strftime("%Y%m%d")
+        )
+        output_end_trade_date = int(
+            base["date"].iloc[last_candidate].strftime("%Y%m%d")
+        )
+        output_date_mask = result_frame["trade_date"].between(
+            output_start_trade_date,
+            output_end_trade_date,
+        )
+        result_frame = result_frame.loc[output_date_mask].reset_index(drop=True)
+        postprocess_diagnostics = postprocess_diagnostics.loc[
+            postprocess_diagnostics["trade_date"].between(
+                output_start_trade_date,
+                output_end_trade_date,
+            )
+        ].reset_index(drop=True)
+        if not diagnostics_frame.empty:
+            diagnostics_frame = diagnostics_frame.loc[
+                diagnostics_frame["trade_date"].between(
+                    output_start_trade_date,
+                    output_end_trade_date,
+                )
+            ].reset_index(drop=True)
         if regime_postprocess_diagnostics_output_path:
             postprocess_diagnostics.to_csv(
                 regime_postprocess_diagnostics_output_path,
@@ -1174,6 +1261,17 @@ def loop_validate_prediction_results(
                 on="trade_date",
                 how="left",
             )
+        final_by_date = result_frame.set_index("trade_date")
+        for column in ("predicted_pct_change", "real_pct_change", "correct"):
+            diagnostics_frame[column] = diagnostics_frame["trade_date"].map(
+                final_by_date[column]
+            )
+        diagnostics_frame["predicted_label"] = (
+            diagnostics_frame["predicted_pct_change"] > 0
+        ).astype(int)
+        diagnostics_frame["real_label"] = (
+            diagnostics_frame["real_pct_change"] > 0
+        ).astype(int)
 
     if output_path:
         result_frame.to_csv(output_path, index=False, encoding="utf-8-sig")
@@ -1462,6 +1560,7 @@ def _build_regime_postprocess_frame(
     external_cols = [column for column in base.columns if column.startswith("ext_")]
     if external_cols:
         context = pd.concat([context, base[external_cols].reset_index(drop=True)], axis=1)
+    context = _add_regime_market_states(context)
 
     result = result_frame.copy()
     result["trade_date"] = pd.to_numeric(result["trade_date"], errors="raise").astype(int)
@@ -1491,10 +1590,16 @@ def _build_regime_postprocess_frame(
         "long",
         "short",
     )
-    return _add_regime_postprocess_states(merged)
+    return _add_regime_diagnostic_states(merged)
 
 
 def _add_regime_postprocess_states(frame: pd.DataFrame) -> pd.DataFrame:
+    """Add all regime states when the caller already has a full history frame."""
+
+    return _add_regime_diagnostic_states(_add_regime_market_states(frame))
+
+
+def _add_regime_market_states(frame: pd.DataFrame) -> pd.DataFrame:
     frame = frame.copy()
     close = pd.to_numeric(frame["close"], errors="coerce")
     open_ = pd.to_numeric(frame["open"], errors="coerce")
@@ -1549,6 +1654,11 @@ def _add_regime_postprocess_states(frame: pd.DataFrame) -> pd.DataFrame:
             "ext_im_main_ret1",
         ],
     )
+    return frame
+
+
+def _add_regime_diagnostic_states(frame: pd.DataFrame) -> pd.DataFrame:
+    frame = frame.copy()
     if {
         "state_veto_rule_hist_accuracy",
         "volatility_rule_hist_accuracy",
@@ -1586,7 +1696,8 @@ def _apply_regime_postprocess(
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     rows: list[dict[str, Any]] = []
     diagnostics: list[dict[str, Any]] = []
-    flipped_so_far = 0
+    history_window = max(1, int(history_window))
+    flip_history: list[bool] = []
     for idx, row in frame.reset_index(drop=True).iterrows():
         selected_key = _select_regime_flip_key(
             frame=frame,
@@ -1596,10 +1707,13 @@ def _apply_regime_postprocess(
             min_history=min_history,
             flip_below=flip_below,
         )
-        projected_flip_rate = (flipped_so_far + 1) / (idx + 1)
+        flip_history_limit = max(0, history_window - 1)
+        recent_flips = (
+            flip_history[-flip_history_limit:] if flip_history_limit else []
+        )
+        projected_flip_rate = (sum(recent_flips) + 1) / (len(recent_flips) + 1)
         flip = bool(selected_key is not None and projected_flip_rate <= max_flip_rate)
-        if flip:
-            flipped_so_far += 1
+        flip_history.append(flip)
         original_pred = float(row["predicted_pct_change"])
         real = float(row["real_pct_change"])
         predicted_pct_change = -original_pred if flip else original_pred
@@ -1629,6 +1743,8 @@ def _apply_regime_postprocess(
                 "regime_postprocess_flipped": int(flip),
                 "original_correct": original_correct,
                 "postprocess_correct": correct,
+                "original_predicted_pct_change": original_pred,
+                "postprocess_predicted_pct_change": predicted_pct_change,
                 "original_prediction_side": row["prediction_side"],
                 "postprocess_prediction_side": (
                     "long" if predicted_pct_change > 0 else "short"
@@ -1844,10 +1960,14 @@ def _calibrated_rule_signal(
     next_returns = base["close"].shift(-1) / base["close"] - 1.0
     labels = (next_returns > 0).astype(int)
 
+    latest_historical_date = dates.iloc[max(0, idx - 1)]
     if threshold_end_date is None:
         threshold_end = dates.iloc[max(0, idx - 252)]
     else:
-        threshold_end = _parse_single_date(threshold_end_date, config.dayfirst)
+        threshold_end = min(
+            _parse_single_date(threshold_end_date, config.dayfirst),
+            latest_historical_date,
+        )
     if calibration_end_date is None:
         calibration_end = dates.iloc[max(0, idx - 1)]
     else:
@@ -1861,13 +1981,14 @@ def _calibrated_rule_signal(
         calibration_start = _parse_single_date(calibration_start_date, config.dayfirst)
 
     valid_feature_mask = features.notna().all(axis=1)
-    threshold_mask = valid_feature_mask & dates.le(threshold_end)
+    historical_mask = pd.Series(np.arange(len(base)) < idx, index=base.index)
+    threshold_mask = valid_feature_mask & dates.le(threshold_end) & historical_mask
     calibration_mask = (
         valid_feature_mask
         & next_returns.notna()
         & dates.ge(calibration_start)
         & dates.le(calibration_end)
-        & (np.arange(len(base)) < idx)
+        & historical_mask
     )
     calibration_idx = np.flatnonzero(calibration_mask.to_numpy())
     if len(calibration_idx) < 40:
@@ -2293,11 +2414,6 @@ def _state_veto_rule_signal(
 
     candidates: list[tuple[float, int, str]] = []
     if len(history_idx) > 0:
-        history_labels = np.asarray(
-            [base_label_by_idx[int(signal_idx)] for signal_idx in history_idx],
-            dtype=np.int8,
-        )
-        history_correct = history_labels == cache.labels[history_idx]
         for state_name, mask in state_masks:
             if idx >= len(mask) or not bool(mask[idx]):
                 continue
@@ -3268,8 +3384,10 @@ def _build_features(
         if (
             column.endswith("_ret1")
             or column.endswith("_ret1_lag1")
+            or column.endswith("_ret1_lag2")
             or column.endswith("_pct_chg")
             or column.endswith("_pct_chg_lag1")
+            or column.endswith("_pct_chg_lag2")
         ):
             rolling_std = series.rolling(60).std().replace(0, np.nan)
             external_features[f"{column}_z60"] = (

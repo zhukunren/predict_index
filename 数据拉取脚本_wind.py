@@ -360,9 +360,9 @@ def default_feature_lag(
 ) -> int:
     if prediction_time not in {"after_close", "before_open"}:
         raise ValueError("prediction_time 必须是 'after_close' 或 'before_open'。")
-    if name == HANGSENG_NAME:
-        return 1
-    return 0
+    market_lag = 1 if name == HANGSENG_NAME else 0
+    timing_lag = 1 if prediction_time == "before_open" else 0
+    return market_lag + timing_lag
 
 
 def _to_target_raw_frame(df: pd.DataFrame, *, ts_code: str) -> pd.DataFrame:
@@ -443,7 +443,11 @@ def _target_feature_frame(df: pd.DataFrame) -> pd.DataFrame:
         (out["close"] / out["pre_close"] - 1.0) * 100.0,
     )
     out["target_next_return"] = out["close"].shift(-1) / out["close"] - 1.0
-    out["target_next_direction"] = (out["target_next_return"] > 0).astype(float)
+    out["target_next_direction"] = (
+        (out["target_next_return"] > 0)
+        .astype(float)
+        .where(out["target_next_return"].notna())
+    )
     return out.dropna(subset=["trade_date", "open", "high", "low", "close"])
 
 
@@ -483,11 +487,6 @@ def _asset_feature_frame(name: str, df: pd.DataFrame, *, lag: int = 0) -> pd.Dat
 
 
 def _existing_hangseng_feature_frame(df: pd.DataFrame) -> pd.DataFrame:
-    source = _normalize_price_frame(df)
-    if "trade_date" not in source.columns:
-        return pd.DataFrame()
-
-    raw_dates = source["trade_date"]
     selected = [
         column
         for column in df.columns
@@ -496,10 +495,30 @@ def _existing_hangseng_feature_frame(df: pd.DataFrame) -> pd.DataFrame:
     if not selected:
         return pd.DataFrame()
 
-    out = pd.DataFrame({"trade_date": raw_dates})
+    columns_by_lower = {str(column).strip().lower(): column for column in df.columns}
+    date_column = next(
+        (
+            columns_by_lower[name]
+            for name in ("trade_date", "trade_dt", "date", "datetime", "time", "opdate")
+            if name in columns_by_lower
+        ),
+        None,
+    )
+    out = pd.DataFrame(index=df.index)
+    if date_column is not None:
+        out["trade_date"] = _parse_trade_dates(df[date_column])
+    elif isinstance(df.index, pd.DatetimeIndex):
+        out["trade_date"] = pd.to_datetime(df.index, errors="coerce")
+    else:
+        return pd.DataFrame()
+    out["_source_order"] = np.arange(len(out))
     for column in selected:
         out[str(column)] = pd.to_numeric(df[column], errors="coerce")
-    return out
+    out = out.replace([np.inf, -np.inf], np.nan)
+    out = out.dropna(subset=["trade_date"])
+    out = out.sort_values(["trade_date", "_source_order"])
+    out = out.drop_duplicates(subset=["trade_date"], keep="last")
+    return out.drop(columns="_source_order").reset_index(drop=True)
 
 
 def _normalize_price_frame(df: pd.DataFrame) -> pd.DataFrame:
