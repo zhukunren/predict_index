@@ -106,6 +106,7 @@ def _fast_rule_kwargs() -> dict[str, object]:
         "state_veto_bad_accuracy": 0.5,
         "state_veto_quantiles": (0.4,),
         "return_magnitude_mode": "directional_median",
+        "return_calibration_window": 0,
         "output_path": None,
         "diagnostics_output_path": None,
         "confidence_output_path": None,

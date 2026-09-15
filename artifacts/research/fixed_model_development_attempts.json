@@ -1,0 +1,53 @@
+[
+  {
+    "attempt": 1,
+    "model": "logistic_l2",
+    "parameters": {
+      "C": 0.1,
+      "max_iter": 2000,
+      "solver": "liblinear",
+      "random_state": 42
+    },
+    "rows": 484,
+    "fit_count": 98,
+    "elapsed_seconds": 14.169,
+    "status": "complete",
+    "parameter_revision": false
+  },
+  {
+    "attempt": 2,
+    "model": "hist_gradient_boosting",
+    "parameters": {
+      "max_iter": 100,
+      "max_leaf_nodes": 7,
+      "max_depth": 3,
+      "learning_rate": 0.03,
+      "min_samples_leaf": 40,
+      "l2_regularization": 10.0,
+      "early_stopping": false,
+      "random_state": 42
+    },
+    "rows": 484,
+    "fit_count": 98,
+    "elapsed_seconds": 23.73,
+    "status": "complete",
+    "parameter_revision": false
+  },
+  {
+    "attempt": 3,
+    "model": "extra_trees",
+    "parameters": {
+      "n_estimators": 200,
+      "max_depth": 4,
+      "min_samples_leaf": 30,
+      "max_features": 0.7,
+      "n_jobs": 1,
+      "random_state": 42
+    },
+    "rows": 484,
+    "fit_count": 98,
+    "elapsed_seconds": 28.011,
+    "status": "complete",
+    "parameter_revision": false
+  }
+]

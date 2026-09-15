@@ -1,0 +1,9 @@
+{
+  "passed": false,
+  "passing_candidates": [],
+  "candidate_status": {
+    "fixed_state_veto": "failed",
+    "regularized_trees": "failed"
+  },
+  "contract_sha256": "8e901bf81b1312d335d114e2a4f0bcf9190393dfb53f70dc6d3b8b6d757200d2"
+}

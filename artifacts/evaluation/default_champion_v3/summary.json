@@ -1,0 +1,12 @@
+{
+  "passed": true,
+  "batch_passed": true,
+  "passing_candidates": [
+    "fixed_state_veto"
+  ],
+  "candidate_status": {
+    "fixed_state_veto": "passed"
+  },
+  "promotion_policy": "A deployment must name one candidate and require that candidate's own metrics status to be passed; mixed-batch status never selects a champion.",
+  "contract_sha256": "2b0b3110772c8bdf739c64bb29cfeae7f8b729d81eba37a7fb0811d50e94b29b"
+}

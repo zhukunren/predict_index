@@ -1,13 +1,13 @@
-"""Direction-first BiLSTM-Attention predictor for daily market data.
+"""Causal daily market direction predictor.
 
 This module is intentionally independent from the existing prediction scripts in
 the workspace. It follows the method described in the PDF:
 
 * daily OHLCV features plus technical indicators
 * 30-trading-day sequence inputs
-* next-trading-day direction label with a +/-0.1% neutral band
-* BiLSTM encoder, temporal attention, dropout, small dense layer
-* validation-tuned classification threshold
+* causal, rank-weighted rule ensemble as the accepted default signal engine
+* optional BiLSTM-Attention and regularized-tree research engines
+* fixed-window causal confidence and return calibration
 
 The public one-call API is:
 
@@ -17,9 +17,8 @@ Optional walk-forward validation is available through:
 
     validation = walk_forward_validate(df)
 
-The model is direction-first. The returned next-return estimate is only a
-secondary historical calibration based on realized returns in the predicted
-direction; it is not used to decide up/down.
+The default is direction-first. Returned next-return estimates are calibrated
+separately and never change the recorded direction label.
 """
 
 from __future__ import annotations
@@ -65,6 +64,7 @@ ReturnMagnitudeMode = Literal["directional_median", "range_scaled"]
 CliMode = Literal["predict", "loop_validate", "walk_forward"]
 ConfidenceCalibrationMethod = Literal["platt", "isotonic"]
 SignalEngine = Literal[
+    "regularized_trees",
     "bilstm",
     "volatility_rule",
     "state_veto_rule",
@@ -77,6 +77,7 @@ SignalEngine = Literal[
 
 _CLI_MODES: tuple[CliMode, ...] = ("predict", "loop_validate", "walk_forward")
 _SIGNAL_ENGINES: tuple[SignalEngine, ...] = (
+    "regularized_trees",
     "bilstm",
     "volatility_rule",
     "state_veto_rule",
@@ -119,11 +120,12 @@ SCRIPT_CONFIDENCE_CALIBRATION_BIN_EDGES = (
     1.0,
 )
 # 滚动置信度校准与信号引擎自身的历史校准相互独立。
-# 设置为 0 或 None 可以禁用滚动映射。
+# 设置为 0 或 None 可以禁用滚动映射。默认窗口固定为 300，
+# 不从评估期结果选择窗口，避免事后校准选择。
 SCRIPT_CONFIDENCE_CALIBRATION_WINDOW: int | None = 300
 SCRIPT_CONFIDENCE_CALIBRATION_MIN_ROWS = 60
 SCRIPT_CONFIDENCE_CALIBRATION_METHOD = "platt"
-SCRIPT_CONFIDENCE_CALIBRATION_COMPARE_WINDOWS: tuple[int, ...] = (120, 300, 600)
+SCRIPT_CONFIDENCE_CALIBRATION_COMPARE_WINDOWS: tuple[int, ...] = ()
 SCRIPT_ROLLING_CONFIDENCE_OUTPUT_PATH: str | None = None
 SCRIPT_ROLLING_CONFIDENCE_COMPARISON_OUTPUT_PATH: str | None = None
 SCRIPT_ENCODING = "utf-8-sig"
@@ -153,6 +155,9 @@ SCRIPT_SHOW_PROGRESS = True
 #   "calibrated_rule" -> 在验证窗口之前完成历史波动率/区间规则集校准
 #   "historical_selector" -> 每日严格选择 state_veto_rule 或 volatility_rule，
 #                             仅在分歧时启用切换保护
+# Accepted champion: see artifacts/evaluation/default_champion_v2/contract.json.
+# Other engines remain explicit research/challenger choices and do not replace it.
+SCRIPT_ACCEPTED_ALGORITHM_ID = "rank_weighted_state_veto_v1"
 SCRIPT_SIGNAL_ENGINE = "state_veto_rule"
 SCRIPT_RULE_THRESHOLD_END_DATE: str | None = "20241231"
 SCRIPT_RULE_CALIBRATION_START_DATE: str | None = "20240101"
@@ -189,6 +194,8 @@ SCRIPT_RETURN_MAGNITUDE_MIN_ROWS = 80
 SCRIPT_RETURN_MAGNITUDE_GRID_SIZE = 120
 SCRIPT_RETURN_MAGNITUDE_CLIP_LOW_QUANTILE = 0.05
 SCRIPT_RETURN_MAGNITUDE_CLIP_HIGH_QUANTILE = 0.95
+SCRIPT_RETURN_CALIBRATION_WINDOW = 252
+SCRIPT_RETURN_CALIBRATION_MIN_ROWS = 60
 
 # 严格使用历史数据的失败保护，不使用当前行的实际收益。
 # 保护机制先识别近期表现恶化，只有较短确认窗口也持续较弱时才反转当前信号。
@@ -574,27 +581,51 @@ _PUBLIC_RESULT_COLUMNS = tuple(
 def predict_next_day(
     df: pd.DataFrame,
     config: DirectionPredictionConfig | None = None,
+    **overrides: Any,
 ) -> dict[str, Any]:
-    """Fit on historical data and predict the next trading day's direction.
+    """Run the same causal pipeline as historical validation, on the latest row."""
 
-    Parameters
-    ----------
-    df:
-        Market data sorted either ascending or descending. Supported schemas
-        include common Tushare style columns (trade_date/open/high/low/close)
-        and Wind style columns (trade_dt/s_dq_open/...).
-    config:
-        Optional model and preprocessing configuration.
-
-    Returns
-    -------
-    dict
-        Serializable prediction summary. The direction fields are primary; the
-        estimated return fields are auxiliary.
-    """
-
-    fitted = fit_direction_model(df, config=config)
-    return prediction_to_dict(fitted)
+    defaults = _build_argument_parser().parse_args([])
+    cfg = config or _config_from_cli_args(defaults)
+    options = _loop_validation_kwargs_from_cli_args(defaults, output_path=None)
+    options.update(overrides)
+    for name in tuple(options):
+        if name.endswith("_path"):
+            options[name] = None
+    options.update(start_date=None, end_date=None, periods=1, include_latest=True, progress=False)
+    frame = loop_validate_prediction_results(df, config=cfg, **options)
+    latest = frame.iloc[-1]
+    public = _format_result_frame_for_csv(frame).iloc[-1]
+    base = _normalize_market_frame(df, cfg)
+    label = int(latest["predicted_label"])
+    confidence = float(latest.get("calibrated_confidence", latest["confidence"]))
+    return {
+        "model": options["signal_engine"],
+        "algorithm_id": SCRIPT_ACCEPTED_ALGORITHM_ID if options["signal_engine"] == SCRIPT_SIGNAL_ENGINE else options["signal_engine"],
+        "signal_engine": options["signal_engine"],
+        "last_date": base["date"].iloc[-1].strftime("%Y-%m-%d"),
+        "last_close": float(base["close"].iloc[-1]),
+        "predicted_direction": "up" if label else "down",
+        "predicted_label": label,
+        "probability_up": confidence if label else 1.0 - confidence,
+        "probability_down": 1.0 - confidence if label else confidence,
+        "direction_correctness_probability": confidence,
+        "probability_source": "up_down_probability_derived_from_calibrated_direction_correctness",
+        "decision_threshold": None,
+        "confidence": confidence,
+        "calibrated_confidence": confidence,
+        "raw_confidence": float(latest["confidence"]),
+        "confidence_calibration_status": public["置信度校准状态"],
+        "confidence_calibration_method": latest.get("confidence_calibration_method", None),
+        "confidence_calibration_rows": int(latest.get("confidence_calibration_rows", 0)),
+        "confidence_calibration_window": latest.get("confidence_calibration_window", None),
+        "confidence_calibration_fallback": int(public["置信度校准回退标记"]),
+        "estimated_next_return": float(latest["predicted_pct_change"]),
+        "estimated_next_pct_change": float(latest["predicted_pct_change"] * 100.0),
+        "estimated_next_close": float(latest["predicted_close"]),
+        "return_calibration_scale": float(latest.get("return_calibration_scale", 1.0)),
+        "return_estimate_note": "Direction and the historical calibrated return estimate are separate outputs.",
+    }
 
 
 def fit_direction_model(
@@ -849,10 +880,11 @@ def _resolve_loop_validation_range(
     regime_history_window: int,
     regime_min_history: int,
     rolling_calibration_windows: tuple[int, ...],
+    include_latest: bool = False,
 ) -> _LoopValidationRange:
     minimum_start_index = config.lookback + config.min_train_sequences
     output_start_index = minimum_start_index
-    end_index = len(base) - 2
+    end_index = len(base) - (1 if include_latest else 2)
 
     if start_date is not None:
         start_ts = _parse_single_date(start_date, config.dayfirst)
@@ -943,6 +975,7 @@ def loop_validate_prediction_results(
     start_date: str | int | pd.Timestamp | None = None,
     end_date: str | int | pd.Timestamp | None = None,
     periods: int = 60,
+    include_latest: bool = False,
     output_path: str | None = None,
     diagnostics_output_path: str | None = None,
     confidence_output_path: str | None = None,
@@ -967,7 +1000,7 @@ def loop_validate_prediction_results(
         SCRIPT_ROLLING_CONFIDENCE_COMPARISON_OUTPUT_PATH
     ),
     progress: bool = True,
-    signal_engine: SignalEngine = "bilstm",
+    signal_engine: SignalEngine = SCRIPT_SIGNAL_ENGINE,
     rule_threshold_end_date: str | int | pd.Timestamp | None = None,
     rule_calibration_start_date: str | int | pd.Timestamp | None = None,
     rule_calibration_end_date: str | int | pd.Timestamp | None = None,
@@ -1008,6 +1041,8 @@ def loop_validate_prediction_results(
     return_magnitude_clip_high_quantile: float = (
         SCRIPT_RETURN_MAGNITUDE_CLIP_HIGH_QUANTILE
     ),
+    return_calibration_window: int = SCRIPT_RETURN_CALIBRATION_WINDOW,
+    return_calibration_min_rows: int = SCRIPT_RETURN_CALIBRATION_MIN_ROWS,
     recent_failure_guard: bool = SCRIPT_RECENT_FAILURE_GUARD,
     recent_failure_window: int = SCRIPT_RECENT_FAILURE_WINDOW,
     recent_failure_degrade_threshold: float = (
@@ -1067,6 +1102,13 @@ def loop_validate_prediction_results(
         confidence_calibration_min_rows=confidence_calibration_min_rows,
         confidence_calibration_method=confidence_calibration_method,
     )
+    if (
+        return_calibration_window < 0
+        or return_calibration_min_rows < 2
+        or (return_calibration_window and return_calibration_window < return_calibration_min_rows)
+    ):
+        raise ValueError("Return calibration requires a nonnegative window and at least two rows.")
+    warmup_windows = rolling_windows + ((return_calibration_window,) if return_calibration_window else ())
     validation_range = _resolve_loop_validation_range(
         base=base,
         config=cfg,
@@ -1076,7 +1118,8 @@ def loop_validate_prediction_results(
         regime_postprocess=regime_postprocess,
         regime_history_window=regime_postprocess_history_window,
         regime_min_history=regime_postprocess_min_history,
-        rolling_calibration_windows=rolling_windows,
+        rolling_calibration_windows=warmup_windows,
+        include_latest=include_latest,
     )
 
     # 为整个验证过程一次性准备引擎所需的特征和缓存。
@@ -1123,6 +1166,13 @@ def loop_validate_prediction_results(
     selector_history: list[dict[str, Any]] = []
     state_veto_base_signals: dict[int, RuleSignal] | None = None
     state_veto_masks: list[tuple[str, np.ndarray]] | None = None
+    model_probabilities: np.ndarray | None = None
+    model_training_rows: np.ndarray | None = None
+    if signal_engine == "regularized_trees":
+        from regularized_direction import rolling_probabilities
+
+        feature_frame = _clean_feature_frame(_build_features(base, cfg))
+        model_probabilities, model_training_rows = rolling_probabilities(feature_frame, base["close"])
     if signal_engine in {"state_veto_rule", "historical_selector"}:
         assert nested_rule_cache is not None
         assert feature_frame is not None
@@ -1160,7 +1210,21 @@ def loop_validate_prediction_results(
         signal: RuleSignal | None = None
         selector_diagnostics: dict[str, Any] = {}
         selector_candidate_signals: dict[str, RuleSignal] | None = None
-        if signal_engine == "volatility_rule":
+        if signal_engine == "regularized_trees":
+            assert model_probabilities is not None and model_training_rows is not None
+            probability = float(model_probabilities[idx])
+            label = int(probability >= 0.5)
+            signal = _rule_signal_from_label(
+                predicted_label=label,
+                base=base,
+                idx=idx,
+                rule_names=["regularized_trees"],
+                calibration_accuracy=probability if label else 1.0 - probability,
+                calibration_rows=int(model_training_rows[idx]),
+                diagnostics={"model_probability_up": probability, "rule_mode": "regularized_trees"},
+            )
+            predicted_pct_change = signal.predicted_return
+        elif signal_engine == "volatility_rule":
             assert feature_frame is not None
             assert nested_rule_cache is not None
             signal = _nested_volatility_rule_signal(
@@ -1278,7 +1342,7 @@ def loop_validate_prediction_results(
         confidence = (
             _rule_signal_confidence(signal)
             if signal is not None
-            else float(fitted_result["confidence"])
+            else float(fitted_result["raw_confidence"])
         )
         return (
             signal,
@@ -1373,27 +1437,33 @@ def loop_validate_prediction_results(
             short_threshold=recent_failure_short_threshold,
         )
         confidence = _confidence_after_failure_guard(confidence, guard_diagnostics)
-        real_pct_change = float(base["close"].iloc[idx + 1] / base["close"].iloc[idx] - 1.0)
+        has_outcome = idx + 1 < len(base)
+        real_pct_change = (
+            float(base["close"].iloc[idx + 1] / base["close"].iloc[idx] - 1.0)
+            if has_outcome else np.nan
+        )
         predicted_close = float(base["close"].iloc[idx] * (1.0 + predicted_pct_change))
         raw_correct = bool(
             _direction_sign(pre_guard_predicted_pct_change)
             == _direction_sign(real_pct_change)
-        )
+        ) if has_outcome else None
         correct = bool(
             _direction_sign(predicted_pct_change) == _direction_sign(real_pct_change)
-        )
-        raw_direction_history.append(raw_correct)
-        _append_selector_history(
-            history=selector_history,
-            base=base,
-            idx=idx,
-            candidate_signals=selector_candidate_signals,
-            real_pct_change=real_pct_change,
-        )
+        ) if has_outcome else None
+        if has_outcome:
+            raw_direction_history.append(raw_correct)
+            _append_selector_history(
+                history=selector_history,
+                base=base,
+                idx=idx,
+                candidate_signals=selector_candidate_signals,
+                real_pct_change=real_pct_change,
+            )
         rows.append(
             {
                 "trade_date": int(base["date"].iloc[idx].strftime("%Y%m%d")),
                 "predicted_pct_change": predicted_pct_change,
+                "predicted_label": int(predicted_pct_change > 0),
                 "predicted_close": predicted_close,
                 "confidence": confidence,
                 "real_pct_change": real_pct_change,
@@ -1401,7 +1471,7 @@ def loop_validate_prediction_results(
             }
         )
         if diagnostics_output_path or regime_postprocess:
-            real_label = int(real_pct_change > 0)
+            real_label = int(real_pct_change > 0) if has_outcome else None
             diagnostics = dict(signal.diagnostics) if signal is not None else {}
             diagnostics.update(selector_diagnostics)
             diagnostics.update(magnitude_diagnostics)
@@ -1440,7 +1510,8 @@ def loop_validate_prediction_results(
         if progress and idx >= validation_range.output_start_index:
             output_offset = idx - validation_range.output_start_index + 1
             visible_rows = rows[validation_range.processing_warmup_rows :]
-            accuracy = float(np.mean([row["correct"] for row in visible_rows]))
+            completed = [row["correct"] for row in visible_rows if row["correct"] is not None]
+            accuracy = float(np.mean(completed)) if completed else np.nan
             print(
                 f"[{signal_engine}] [{output_offset}/{validation_range.output_rows}] "
                 f"{rows[-1]['trade_date']} "
@@ -1455,6 +1526,7 @@ def loop_validate_prediction_results(
         columns=[
             "trade_date",
             "predicted_pct_change",
+            "predicted_label",
             "predicted_close",
             "confidence",
             "real_pct_change",
@@ -1511,6 +1583,8 @@ def loop_validate_prediction_results(
                 confidence_calibration_summary_path
             ),
         ),
+        return_calibration_window=return_calibration_window,
+        return_calibration_min_rows=return_calibration_min_rows,
     )
 
 
@@ -1530,6 +1604,8 @@ def _finalize_loop_validation_results(
     calibration_options: _ConfidenceCalibrationOptions,
     high_confidence_options: _HighConfidenceOptions,
     output_paths: _LoopOutputPaths,
+    return_calibration_window: int = 0,
+    return_calibration_min_rows: int = SCRIPT_RETURN_CALIBRATION_MIN_ROWS,
 ) -> pd.DataFrame:
     result_frame, diagnostics_frame, postprocess_diagnostics = (
         _apply_loop_regime_postprocess(
@@ -1545,6 +1621,14 @@ def _finalize_loop_validation_results(
         validation_range=validation_range,
         options=calibration_options,
     )
+    # Freeze the final direction before shrinking the numerical return estimate.
+    result_frame["predicted_label"] = (result_frame["predicted_pct_change"] > 0).astype(int)
+    if return_calibration_window:
+        from return_calibration import calibrate_returns
+
+        result_frame = calibrate_returns(
+            result_frame, window=return_calibration_window, min_rows=return_calibration_min_rows
+        )
     result_frame, diagnostics_frame = _trim_loop_validation_frames(
         result_frame=result_frame,
         diagnostics_frame=diagnostics_frame,
@@ -1614,7 +1698,6 @@ def _apply_loop_confidence_calibration(
     if not options.rolling_windows:
         return result_frame, pd.DataFrame()
 
-    selected_window: int | None = None
     comparison = pd.DataFrame()
     if options.compare_windows:
         comparison, rolling_frames = compare_rolling_confidence_calibration(
@@ -1626,9 +1709,6 @@ def _apply_loop_confidence_calibration(
             evaluation_end_trade_date=validation_range.output_end_trade_date,
             bin_edges=options.bin_edges,
         )
-        selected_rows = comparison.loc[comparison["selected"]]
-        if not selected_rows.empty:
-            selected_window = int(selected_rows.iloc[0]["window"])
     else:
         rolling_frames = {
             window: _apply_rolling_confidence_calibration(
@@ -1640,13 +1720,16 @@ def _apply_loop_confidence_calibration(
             for window in options.rolling_windows
         }
 
+    # Evaluation-period rankings are diagnostics, never a production selector.
     primary_window = (
-        selected_window
-        if selected_window is not None
-        else int(options.window)
+        int(options.window)
         if options.window is not None and int(options.window) > 0
-        else options.rolling_windows[0]
+        else None
     )
+    if not comparison.empty:
+        comparison["used_for_output"] = comparison["window"].eq(primary_window)
+    if primary_window is None:
+        return result_frame, comparison
     return rolling_frames[primary_window], comparison
 
 
@@ -1674,6 +1757,7 @@ def _trim_loop_validation_frames(
     final_by_date = result_frame.set_index("trade_date")
     synchronized_columns = (
         "predicted_pct_change",
+        "predicted_label",
         "confidence",
         "calibrated_confidence",
         "real_pct_change",
@@ -1684,12 +1768,13 @@ def _trim_loop_validation_frames(
             diagnostics_frame[column] = diagnostics_frame["trade_date"].map(
                 final_by_date[column]
             )
-    diagnostics_frame["predicted_label"] = (
-        diagnostics_frame["predicted_pct_change"] > 0
-    ).astype(int)
+    if "predicted_label" not in final_by_date:
+        diagnostics_frame["predicted_label"] = (
+            diagnostics_frame["predicted_pct_change"] > 0
+        ).astype(int)
     diagnostics_frame["real_label"] = (
         diagnostics_frame["real_pct_change"] > 0
-    ).astype(int)
+    ).astype("Int64").where(diagnostics_frame["real_pct_change"].notna())
     return result_frame, diagnostics_frame
 
 
@@ -1800,11 +1885,9 @@ def _format_result_frame_for_csv(result_frame: pd.DataFrame) -> pd.DataFrame:
     raw_confidence = pd.to_numeric(
         public_result_frame["confidence"], errors="coerce"
     )
+    direction_values = public_result_frame.get("predicted_label", public_result_frame["predicted_pct_change"])
     predicted_direction = np.where(
-        pd.to_numeric(
-            public_result_frame["predicted_pct_change"], errors="coerce"
-        )
-        > 0,
+        pd.to_numeric(direction_values, errors="coerce") > 0,
         "上涨",
         "下跌",
     )
@@ -1851,10 +1934,11 @@ def _format_result_frame_for_csv(result_frame: pd.DataFrame) -> pd.DataFrame:
 
 def _build_minimal_diagnostics(result_frame: pd.DataFrame) -> pd.DataFrame:
     diagnostics = result_frame.copy()
-    diagnostics["predicted_label"] = (
-        diagnostics["predicted_pct_change"] > 0
-    ).astype(int)
-    diagnostics["real_label"] = (diagnostics["real_pct_change"] > 0).astype(int)
+    if "predicted_label" not in diagnostics:
+        diagnostics["predicted_label"] = (diagnostics["predicted_pct_change"] > 0).astype(int)
+    diagnostics["real_label"] = (diagnostics["real_pct_change"] > 0).astype("Int64").where(
+        diagnostics["real_pct_change"].notna()
+    )
     diagnostics["signal_engine"] = ""
     diagnostics["rule_mode"] = ""
     return diagnostics
@@ -2347,10 +2431,11 @@ def _direction_side_stats(frame: pd.DataFrame) -> dict[str, float | int]:
             "short_correct": 0,
             "short_accuracy": np.nan,
         }
-    predicted = pd.to_numeric(frame["predicted_pct_change"], errors="coerce")
-    correct = frame["correct"].astype(bool)
-    long_mask = predicted > 0
-    short_mask = predicted < 0
+    predicted = pd.to_numeric(frame.get("predicted_label", frame["predicted_pct_change"]), errors="coerce")
+    correct = frame["correct"].astype("boolean")
+    completed = correct.notna()
+    long_mask = (predicted > 0) & completed
+    short_mask = (predicted <= 0) & completed
     long_rows = int(long_mask.sum())
     short_rows = int(short_mask.sum())
     long_correct = int(correct[long_mask].sum()) if long_rows else 0
@@ -2654,7 +2739,7 @@ def _apply_regime_postprocess(
         )
         correct = bool(
             _direction_sign(predicted_pct_change) == _direction_sign(real)
-        )
+        ) if np.isfinite(real) else None
         rows.append(
             {
                 "trade_date": int(row["trade_date"]),
@@ -2665,7 +2750,7 @@ def _apply_regime_postprocess(
                 "correct": correct,
             }
         )
-        original_correct = bool(row["correct"])
+        original_correct = bool(row["correct"]) if pd.notna(row["correct"]) else None
         diagnostics.append(
             {
                 "trade_date": int(row["trade_date"]),
@@ -3113,36 +3198,66 @@ def _nested_volatility_rule_signal(
         )
 
     scored.sort(key=lambda item: item[0], reverse=True)
-    selected = scored[: max(1, top_k)]
-    weights = np.asarray([max(score - 0.5, 0.001) for score, _, _ in selected])
-    votes = np.asarray([prediction[idx] for _, _, prediction in selected], dtype=float)
+    ranked = scored[: max(1, top_k)]
+
+    # A complementary threshold can become the same signal after the losing
+    # side is reversed. Preserve the established rank-derived weight, while
+    # exposing identical causal prediction paths as one expert. Summing the
+    # rank weights makes this algebraically equivalent to the previous vote.
+    grouped: dict[bytes, dict[str, Any]] = {}
+    signature_idx = np.append(calibration_idx, idx)
+    for score, name, prediction in ranked:
+        signature = prediction[signature_idx].astype(np.int8, copy=False).tobytes()
+        weight = max(score - 0.5, 0.001)
+        expert = grouped.get(signature)
+        if expert is None:
+            grouped[signature] = {
+                "prediction": prediction,
+                "weight": weight,
+                "names": [name],
+                "scores": [score],
+            }
+        else:
+            expert["weight"] += weight
+            expert["names"].append(name)
+            expert["scores"].append(score)
+    experts = list(grouped.values())
+    weights = np.asarray([float(expert["weight"]) for expert in experts])
+    votes = np.asarray([expert["prediction"][idx] for expert in experts], dtype=float)
     vote_score = float(np.dot(votes, weights) / weights.sum())
     predicted_label = int(vote_score >= 0.5)
 
-    selected_matrix = np.vstack([prediction for _, _, prediction in selected])
+    selected_matrix = np.vstack([expert["prediction"] for expert in experts])
     calibration_votes = selected_matrix[:, calibration_idx]
     calibration_valid = (calibration_votes >= 0).all(axis=0)
     if calibration_valid.any():
         ensemble_calibration_pred = (
-            calibration_votes[:, calibration_valid].mean(axis=0) >= 0.5
+            np.dot(weights, calibration_votes[:, calibration_valid]) / weights.sum()
+            >= 0.5
         ).astype(int)
         calibration_accuracy = float(
             (ensemble_calibration_pred == y_cal[calibration_valid]).mean()
         )
     else:
-        calibration_accuracy = float(selected[0][0])
+        calibration_accuracy = float(ranked[0][0])
 
     return _rule_signal_from_label(
         predicted_label=predicted_label,
         base=base,
         idx=idx,
-        rule_names=[f"{name}:cal_acc={score:.3f}" for score, name, _ in selected],
+        rule_names=[
+            "+".join(expert["names"])
+            + f":cal_acc={max(expert['scores']):.3f}:rank_weight={expert['weight']:.3f}"
+            for expert in experts
+        ],
         calibration_accuracy=calibration_accuracy,
         calibration_rows=len(calibration_idx),
         diagnostics={
-            "rule_mode": "volatility_rule",
-            "selected_rule_count": len(selected),
-            "top_rule_score": float(selected[0][0]),
+            "rule_mode": "rank_weighted_rule",
+            "selected_ranked_rule_count": len(ranked),
+            "selected_expert_count": len(experts),
+            "selected_rule_count": len(experts),
+            "top_rule_score": float(ranked[0][0]),
         },
     )
 
@@ -3443,7 +3558,7 @@ def _build_nested_ml_cache(
 
     last_models: dict[str, Any] = {}
     for idx in range(n_rows):
-        if not valid_mask[idx]:
+        if not np.isfinite(x_all[idx]).all():
             continue
         start = max(0, idx - train_window)
         train_idx = np.arange(start, idx)
@@ -4887,6 +5002,8 @@ def _add_loop_and_confidence_cli_arguments(
     parser: argparse.ArgumentParser,
 ) -> None:
     parser.add_argument("--periods", type=int, default=SCRIPT_PERIODS)
+    parser.add_argument("--return-calibration-window", type=int, default=SCRIPT_RETURN_CALIBRATION_WINDOW)
+    parser.add_argument("--return-calibration-min-rows", type=int, default=SCRIPT_RETURN_CALIBRATION_MIN_ROWS)
     parser.add_argument(
         "--latest-periods",
         type=int,
@@ -5219,6 +5336,8 @@ def _add_postprocess_cli_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 _LOOP_CLI_PASSTHROUGH_ARGUMENTS = (
+    "return_calibration_window",
+    "return_calibration_min_rows",
     "start_date",
     "end_date",
     "periods",
@@ -5297,7 +5416,7 @@ def _resolve_cli_mode(args: argparse.Namespace) -> CliMode:
 def _loop_validation_kwargs_from_cli_args(
     args: argparse.Namespace,
     *,
-    output_path: str,
+    output_path: str | None,
 ) -> dict[str, Any]:
     kwargs = {
         name: getattr(args, name) for name in _LOOP_CLI_PASSTHROUGH_ARGUMENTS
@@ -5443,8 +5562,10 @@ def _run_walk_forward_cli(
 def _run_predict_cli(
     data: pd.DataFrame,
     config: DirectionPredictionConfig,
+    args: argparse.Namespace,
 ) -> None:
-    result = predict_next_day(data, config=config)
+    options = _loop_validation_kwargs_from_cli_args(args, output_path=None)
+    result = predict_next_day(data, config=config, **options)
     print(
         json.dumps(
             _json_sanitize(result),
@@ -5467,7 +5588,7 @@ def _main(argv: list[str] | None = None) -> None:
     elif mode == "walk_forward":
         _run_walk_forward_cli(data, config, args)
     else:
-        _run_predict_cli(data, config)
+        _run_predict_cli(data, config, args)
 
 
 if __name__ == "__main__":

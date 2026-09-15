@@ -1,0 +1,10 @@
+{
+  "passed": true,
+  "passing_candidates": [
+    "fixed_state_veto"
+  ],
+  "candidate_status": {
+    "fixed_state_veto": "passed"
+  },
+  "contract_sha256": "eb33e0c4a486493edde100e683610370151370d63469c428863fcba2961453c6"
+}

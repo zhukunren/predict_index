@@ -14,6 +14,9 @@ from 循环验证脚本 import (
     _json_default,
     _json_sanitize,
     _format_result_frame_for_csv,
+    _build_argument_parser,
+    _config_from_cli_args,
+    _loop_validation_kwargs_from_cli_args,
     predict_next_day,
 )
 
@@ -26,50 +29,12 @@ DEFAULT_CANDIDATE_CSVS = (
 DEFAULT_OUTPUT_CSV = Path("drp_feim_next_day_prediction.csv")
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="仅预测下一交易日结果并生成一行结果 CSV，不跑回测。"
-    )
-    parser.add_argument(
-        "csv",
-        nargs="?",
-        default=None,
-        help="本地 merged_features.csv 路径；不填则自动查找最新的默认文件。",
-    )
-    parser.add_argument("--encoding", default="utf-8-sig", help="CSV 文件编码。")
-    parser.add_argument(
-        "--output",
-        default=str(DEFAULT_OUTPUT_CSV),
-        help="预测结果 CSV 输出路径，默认使用与循环验证相同的中文列名格式。",
-    )
-    parser.add_argument("--epochs", type=int, default=10, help="训练轮数。")
-    parser.add_argument("--lookback", type=int, default=30, help="序列回看交易日数。")
-    parser.add_argument(
-        "--neutral-band",
-        type=float,
-        default=0.001,
-        help="方向标签中性区间，默认 +/-0.1%。",
-    )
-    parser.add_argument(
-        "--device",
-        choices=["auto", "cpu", "cuda"],
-        default="auto",
-        help="训练设备。",
-    )
-    parser.add_argument(
-        "--external-feature-mode",
-        choices=["none", "core", "all"],
-        default="core",
-        help="是否使用合并特征中的外部市场特征。",
-    )
-    parser.add_argument(
-        "--technical-feature-mode",
-        choices=["none", "v1", "v1_core"],
-        default="none",
-        help="是否额外生成技术指标特征。",
-    )
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = _build_argument_parser()
+    parser.description = "使用与逐日验证相同的算法预测下一交易日。"
+    parser.set_defaults(csv=None, output=str(DEFAULT_OUTPUT_CSV), mode="predict")
     parser.add_argument("--json", action="store_true", help="输出完整 JSON。")
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def resolve_csv_path(csv_arg: str | None) -> Path:
@@ -88,15 +53,7 @@ def resolve_csv_path(csv_arg: str | None) -> Path:
 
 
 def build_config(args: argparse.Namespace) -> DirectionPredictionConfig:
-    return DirectionPredictionConfig(
-        epochs=args.epochs,
-        lookback=args.lookback,
-        neutral_band=args.neutral_band,
-        device=args.device,
-        external_feature_mode=args.external_feature_mode,
-        technical_feature_mode=args.technical_feature_mode,
-        verbose=False,
-    )
+    return _config_from_cli_args(args)
 
 
 def build_prediction_csv_frame(result: dict[str, Any]) -> pd.DataFrame:
@@ -112,6 +69,7 @@ def build_prediction_csv_frame(result: dict[str, Any]) -> pd.DataFrame:
             {
                 "trade_date": signal_date,
                 "predicted_pct_change": float(result["estimated_next_return"]),
+                "predicted_label": result.get("predicted_label", int(float(result["estimated_next_return"]) > 0)),
                 "predicted_close": float(result["estimated_next_close"]),
                 "confidence": raw_confidence,
                 "calibrated_confidence": calibrated_confidence,
@@ -121,7 +79,7 @@ def build_prediction_csv_frame(result: dict[str, Any]) -> pd.DataFrame:
                 "confidence_calibration_status": result.get(
                     "confidence_calibration_status", pd.NA
                 ),
-                "confidence_calibration_window": pd.NA,
+                "confidence_calibration_window": result.get("confidence_calibration_window", pd.NA),
                 "confidence_calibration_method": result.get(
                     "confidence_calibration_method", pd.NA
                 ),
@@ -154,8 +112,14 @@ def print_summary(result: dict[str, Any], csv_path: Path) -> None:
     print(f"最后交易日: {result['last_date']}")
     print(f"最后收盘价: {result['last_close']:.4f}")
     print(f"预测方向: {direction}")
-    print(f"上涨概率: {result['probability_up']:.2%}")
-    print(f"决策阈值: {result['decision_threshold']:.2%}")
+    print(f"算法: {result.get('algorithm_id', result.get('signal_engine', result.get('model', 'bilstm')))}")
+    if result.get("confidence_calibration_status") == "已校准":
+        print(f"方向正确概率: {result['direction_correctness_probability']:.2%}")
+        print(f"换算上涨概率: {result['probability_up']:.2%}")
+    else:
+        print(f"方向历史评分: {result['confidence']:.2%}")
+    if result.get("decision_threshold") is not None:
+        print(f"决策阈值: {result['decision_threshold']:.2%}")
     if "raw_confidence" in result:
         print(f"原始边界分数: {result['raw_confidence']:.2%}")
     print(f"置信度: {result['confidence']:.2%}")
@@ -173,7 +137,8 @@ def main() -> None:
     args = parse_args()
     csv_path = resolve_csv_path(args.csv)
     data = pd.read_csv(csv_path, encoding=args.encoding)
-    result = predict_next_day(data, config=build_config(args))
+    options = _loop_validation_kwargs_from_cli_args(args, output_path=None)
+    result = predict_next_day(data, config=build_config(args), **options)
     output_path = Path(args.output)
     save_prediction_csv(result, output_path)
 
