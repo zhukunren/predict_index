@@ -100,15 +100,12 @@ _SIGNAL_ENGINES: tuple[SignalEngine, ...] = (
 SCRIPT_MODE = "loop_validate"
 SCRIPT_CSV_PATH: str | None = "market_data/merged_features.csv"
 SCRIPT_OUTPUT_PATH: str | None = "drp_feim_prediction_results.csv"
-SCRIPT_DIAGNOSTICS_OUTPUT_PATH: str | None = "drp_feim_rule_diagnostics.csv"
-SCRIPT_CONFIDENCE_OUTPUT_PATH: str | None = "drp_feim_high_confidence_results.csv"
-SCRIPT_CONFIDENCE_SUMMARY_PATH: str | None = "drp_feim_confidence_summary.csv"
-SCRIPT_CONFIDENCE_CALIBRATION_OUTPUT_PATH: str | None = (
-    "drp_feim_confidence_calibration.csv"
-)
-SCRIPT_CONFIDENCE_CALIBRATION_SUMMARY_PATH: str | None = (
-    "drp_feim_confidence_calibration_summary.csv"
-)
+# 默认只保存主结果 CSV。诊断和分析明细仍可通过 API/CLI 显式指定输出路径。
+SCRIPT_DIAGNOSTICS_OUTPUT_PATH: str | None = None
+SCRIPT_CONFIDENCE_OUTPUT_PATH: str | None = None
+SCRIPT_CONFIDENCE_SUMMARY_PATH: str | None = None
+SCRIPT_CONFIDENCE_CALIBRATION_OUTPUT_PATH: str | None = None
+SCRIPT_CONFIDENCE_CALIBRATION_SUMMARY_PATH: str | None = None
 SCRIPT_CONFIDENCE_CALIBRATION_BIN_EDGES = (
     0.0,
     0.50,
@@ -127,18 +124,14 @@ SCRIPT_CONFIDENCE_CALIBRATION_WINDOW: int | None = 300
 SCRIPT_CONFIDENCE_CALIBRATION_MIN_ROWS = 60
 SCRIPT_CONFIDENCE_CALIBRATION_METHOD = "platt"
 SCRIPT_CONFIDENCE_CALIBRATION_COMPARE_WINDOWS: tuple[int, ...] = (120, 300, 600)
-SCRIPT_ROLLING_CONFIDENCE_OUTPUT_PATH: str | None = (
-    "drp_feim_rolling_confidence_results.csv"
-)
-SCRIPT_ROLLING_CONFIDENCE_COMPARISON_OUTPUT_PATH: str | None = (
-    "drp_feim_rolling_confidence_window_comparison.csv"
-)
+SCRIPT_ROLLING_CONFIDENCE_OUTPUT_PATH: str | None = None
+SCRIPT_ROLLING_CONFIDENCE_COMPARISON_OUTPUT_PATH: str | None = None
 SCRIPT_ENCODING = "utf-8-sig"
 
 # 循环验证的日期范围。start/end 都为 None 时，验证最近 SCRIPT_PERIODS 个可验证交易日。
 SCRIPT_START_DATE: str | None = None
 SCRIPT_END_DATE: str | None = None
-SCRIPT_PERIODS = 10  # 回测周期
+SCRIPT_PERIODS = 20  # 回测周期
 
 SCRIPT_EPOCHS = 10
 SCRIPT_LOOKBACK = 30
@@ -216,9 +209,7 @@ SCRIPT_SELECTOR_DISAGREEMENT_MIN_HISTORY = 30
 SCRIPT_SELECTOR_DISAGREEMENT_EDGE = 0.0
 
 SCRIPT_REGIME_POSTPROCESS = False
-SCRIPT_REGIME_POSTPROCESS_DIAGNOSTICS_OUTPUT_PATH: str | None = (
-    "drp_feim_regime_postprocess_diagnostics.csv"
-)
+SCRIPT_REGIME_POSTPROCESS_DIAGNOSTICS_OUTPUT_PATH: str | None = None
 SCRIPT_REGIME_POSTPROCESS_STATE_COLUMNS = (
     "vol20_bucket,"
     "domestic_index_alignment,"
@@ -303,6 +294,10 @@ class FittedDirectionModel:
     latest_date: pd.Timestamp
     latest_close: float
     probability_up: float
+    confidence_calibrator: Any | None
+    confidence_calibration_rows: int
+    confidence_calibration_method: ConfidenceCalibrationMethod
+    confidence_calibration_fallback: int
     device: str
     original_rows: int
     cleaned_rows: int
@@ -527,28 +522,47 @@ _CORE_TECHNICAL_COLUMNS = {
     "volume",
 }
 
-_PUBLIC_OUTPUT_COLUMN_RENAMES = {
-    "trade_date": "signal_date",
-    "predicted_pct_change": "predicted_next_day_return",
-    "predicted_close": "predicted_next_day_close",
-    "real_pct_change": "next_day_real_return",
-    "correct": "direction_correct",
-    "raw_predicted_pct_change": "raw_predicted_next_day_return",
-    "pre_guard_predicted_pct_change": "pre_guard_predicted_next_day_return",
-    "raw_correct": "raw_direction_correct",
-    "original_predicted_pct_change": "original_predicted_next_day_return",
-    "postprocess_predicted_pct_change": "postprocess_predicted_next_day_return",
-    "original_correct": "original_direction_correct",
-    "postprocess_correct": "postprocess_direction_correct",
-}
-_PUBLIC_RESULT_COLUMNS = (
-    "signal_date",
-    "target_trade_date",
-    "predicted_next_day_return",
-    "predicted_next_day_close",
+_INTERNAL_RESULT_CSV_COLUMNS = (
+    "trade_date",
+    "predicted_pct_change",
+    "predicted_direction",
+    "predicted_close",
+    "calibrated_confidence",
     "confidence",
-    "next_day_real_return",
-    "direction_correct",
+    "real_pct_change",
+    "correct",
+    "confidence_calibration_status",
+    "confidence_calibration_window",
+    "confidence_calibration_method",
+    "confidence_calibration_rows",
+    "confidence_calibration_fallback",
+)
+_PUBLIC_OUTPUT_COLUMN_RENAMES = {
+    "trade_date": "信号日期",
+    "target_trade_date": "目标交易日",
+    "predicted_pct_change": "预测次日涨跌幅",
+    "predicted_direction": "预测方向",
+    "predicted_close": "预测次日收盘价",
+    "confidence": "原始边界分数",
+    "calibrated_confidence": "置信度",
+    "real_pct_change": "次日实际涨跌幅",
+    "correct": "方向预测正确",
+    "confidence_calibration_status": "置信度校准状态",
+    "confidence_calibration_window": "置信度校准窗口",
+    "confidence_calibration_method": "置信度校准方法",
+    "confidence_calibration_rows": "置信度校准样本数",
+    "confidence_calibration_fallback": "置信度校准回退标记",
+    "raw_predicted_pct_change": "原始预测次日涨跌幅",
+    "pre_guard_predicted_pct_change": "失败保护前预测次日涨跌幅",
+    "raw_correct": "原始方向预测正确",
+    "original_predicted_pct_change": "后处理前预测次日涨跌幅",
+    "postprocess_predicted_pct_change": "后处理后预测次日涨跌幅",
+    "original_correct": "后处理前方向预测正确",
+    "postprocess_correct": "后处理后方向预测正确",
+}
+_PUBLIC_RESULT_COLUMNS = tuple(
+    _PUBLIC_OUTPUT_COLUMN_RENAMES[column]
+    for column in _INTERNAL_RESULT_CSV_COLUMNS
 )
 
 
@@ -634,6 +648,23 @@ def fit_direction_model(
         y_all[train_end:],
         cfg,
     )
+    validation_raw_confidence = _raw_confidence_from_probability(
+        val_probs,
+        threshold,
+    )
+    validation_correct = (
+        (val_probs >= threshold).astype(int) == y_all[train_end:].astype(int)
+    ).astype(int)
+    (
+        confidence_calibrator,
+        confidence_calibration_rows,
+        confidence_calibration_fallback,
+    ) = _fit_confidence_calibrator(
+        raw_confidence=validation_raw_confidence,
+        correct=validation_correct,
+        min_rows=SCRIPT_CONFIDENCE_CALIBRATION_MIN_ROWS,
+        method=SCRIPT_CONFIDENCE_CALIBRATION_METHOD,
+    )
     validation_metrics = _classification_metrics(val_probs, y_all[train_end:], threshold)
     if cv_result is not None:
         _, cv_metrics = cv_result
@@ -653,6 +684,10 @@ def fit_direction_model(
         latest_date=prepared.latest_date,
         latest_close=prepared.latest_close,
         probability_up=latest_probability,
+        confidence_calibrator=confidence_calibrator,
+        confidence_calibration_rows=confidence_calibration_rows,
+        confidence_calibration_method=SCRIPT_CONFIDENCE_CALIBRATION_METHOD,
+        confidence_calibration_fallback=confidence_calibration_fallback,
         device=device,
         original_rows=prepared.original_rows,
         cleaned_rows=prepared.cleaned_rows,
@@ -1001,16 +1036,17 @@ def loop_validate_prediction_results(
     regime_postprocess_flip_below: float = SCRIPT_REGIME_POSTPROCESS_FLIP_BELOW,
     regime_postprocess_max_flip_rate: float = SCRIPT_REGIME_POSTPROCESS_MAX_FLIP_RATE,
 ) -> pd.DataFrame:
-    """Loop over trading days and output columns aligned to prediction_results.csv.
+    """Loop over trading days and optionally save the result CSV.
 
-    Public output columns are exactly:
-
-    signal_date,target_trade_date,predicted_next_day_return,
-    predicted_next_day_close,confidence,next_day_real_return,direction_correct
-
-    ``signal_date`` is the date on which the prediction is made, while
-    ``target_trade_date`` is the following trading day whose return is evaluated.
-    Return columns contain decimal returns (0.01 means 1%), not percentage points.
+    The returned DataFrame keeps its internal English column names for API
+    compatibility.  CSV output uses Chinese column names, including ``信号日期``,
+    ``预测次日涨跌幅``, ``预测方向``, ``预测次日收盘价``, ``置信度``,
+    ``原始边界分数``, ``次日实际涨跌幅`` and ``方向预测正确``.  ``置信度`` is the
+    historical-calibrated probability that the direction is correct; when the
+    calibration sample is insufficient, it falls back to the raw boundary
+    score and marks ``置信度校准状态`` accordingly.  ``预测方向`` is ``上涨``
+    when the final predicted return is positive and ``下跌`` otherwise.  Return
+    columns contain decimal returns (0.01 means 1%), not percentage points.
     ``confidence`` is a value in [0, 1] and is displayed as a percentage by the
     command-line interface.
     """
@@ -1669,6 +1705,7 @@ def _write_loop_validation_outputs(
     high_confidence_options: _HighConfidenceOptions,
     output_paths: _LoopOutputPaths,
 ) -> None:
+    public_result_frame = _format_result_frame_for_csv(result_frame)
     if regime_options.enabled and regime_options.diagnostics_output_path:
         visible_postprocess_diagnostics = postprocess_diagnostics.loc[
             postprocess_diagnostics["trade_date"].between(
@@ -1682,7 +1719,7 @@ def _write_loop_validation_outputs(
             encoding="utf-8-sig",
         )
     if calibration_options.rolling_output_path and calibration_options.rolling_windows:
-        result_frame.to_csv(
+        public_result_frame.to_csv(
             calibration_options.rolling_output_path,
             index=False,
             encoding="utf-8-sig",
@@ -1694,7 +1731,11 @@ def _write_loop_validation_outputs(
             encoding="utf-8-sig",
         )
     if output_paths.result:
-        result_frame.to_csv(output_paths.result, index=False, encoding="utf-8-sig")
+        public_result_frame.to_csv(
+            output_paths.result,
+            index=False,
+            encoding="utf-8-sig",
+        )
     if output_paths.diagnostics:
         diagnostics_frame.to_csv(
             output_paths.diagnostics,
@@ -1750,6 +1791,57 @@ def _write_loop_validation_outputs(
                 index=False,
                 encoding="utf-8-sig",
             )
+
+
+def _format_result_frame_for_csv(result_frame: pd.DataFrame) -> pd.DataFrame:
+    """Convert an internal result frame to the shared Chinese CSV schema."""
+
+    public_result_frame = result_frame.copy()
+    raw_confidence = pd.to_numeric(
+        public_result_frame["confidence"], errors="coerce"
+    )
+    predicted_direction = np.where(
+        pd.to_numeric(
+            public_result_frame["predicted_pct_change"], errors="coerce"
+        )
+        > 0,
+        "上涨",
+        "下跌",
+    )
+    public_result_frame["predicted_direction"] = predicted_direction
+    if "calibrated_confidence" not in public_result_frame.columns:
+        public_result_frame["calibrated_confidence"] = raw_confidence
+        public_result_frame["confidence_calibration_fallback"] = 1
+    else:
+        calibrated_confidence = pd.to_numeric(
+            public_result_frame["calibrated_confidence"], errors="coerce"
+        )
+        public_result_frame["calibrated_confidence"] = calibrated_confidence.fillna(
+            raw_confidence
+        )
+        if "confidence_calibration_fallback" not in public_result_frame.columns:
+            public_result_frame["confidence_calibration_fallback"] = 1
+    fallback = pd.to_numeric(
+        public_result_frame["confidence_calibration_fallback"], errors="coerce"
+    ).fillna(1).astype(int)
+    public_result_frame["confidence_calibration_fallback"] = fallback
+    if "confidence_calibration_rows" not in public_result_frame.columns:
+        public_result_frame["confidence_calibration_rows"] = 0
+    public_result_frame["confidence_calibration_status"] = np.where(
+        fallback.to_numpy() == 0,
+        "已校准",
+        "未校准（原始边界分数）",
+    )
+    for column in _INTERNAL_RESULT_CSV_COLUMNS:
+        if column not in public_result_frame.columns:
+            public_result_frame[column] = pd.NA
+    public_result_frame = public_result_frame.loc[
+        :, list(_INTERNAL_RESULT_CSV_COLUMNS)
+    ]
+    public_result_frame = public_result_frame.rename(
+        columns=_PUBLIC_OUTPUT_COLUMN_RENAMES
+    )
+    return public_result_frame
 
 
 # ---------------------------------------------------------------------------
@@ -2003,6 +2095,84 @@ def _normalize_confidence_calibration_windows(
         if normalized not in windows:
             windows.append(normalized)
     return tuple(windows)
+
+
+def _raw_confidence_from_probability(
+    probability: float | np.ndarray,
+    threshold: float,
+) -> float | np.ndarray:
+    """Return the uncalibrated distance-from-threshold confidence score."""
+
+    values = np.asarray(probability, dtype=float)
+    margin = np.where(values >= float(threshold), values - threshold, threshold - values)
+    raw_confidence = np.clip(margin / 0.20, 0.0, 1.0)
+    return float(raw_confidence) if raw_confidence.ndim == 0 else raw_confidence
+
+
+def _fit_confidence_calibrator(
+    *,
+    raw_confidence: np.ndarray,
+    correct: np.ndarray,
+    min_rows: int,
+    method: ConfidenceCalibrationMethod,
+) -> tuple[Any | None, int, int]:
+    """Fit a confidence-to-correctness mapper on completed predictions only."""
+
+    if min_rows < 2:
+        raise ValueError("confidence calibration min_rows must be at least 2.")
+    if method not in {"platt", "isotonic"}:
+        raise ValueError("confidence_calibration_method must be 'platt' or 'isotonic'.")
+
+    confidence_values = np.asarray(raw_confidence, dtype=float).reshape(-1)
+    correct_values = np.asarray(correct, dtype=float).reshape(-1)
+    if len(confidence_values) != len(correct_values):
+        raise ValueError("raw_confidence and correct must have the same length.")
+    valid = np.isfinite(confidence_values) & np.isfinite(correct_values)
+    confidence_values = confidence_values[valid]
+    correct_values = correct_values[valid].astype(int)
+    rows = int(len(confidence_values))
+    if rows < min_rows or len(np.unique(correct_values)) < 2:
+        return None, rows, 1
+
+    try:
+        if method == "platt":
+            calibrator: Any = LogisticRegression(
+                solver="lbfgs",
+                C=1.0,
+                max_iter=200,
+            )
+            calibrator.fit(confidence_values.reshape(-1, 1), correct_values)
+        else:
+            calibrator = IsotonicRegression(
+                y_min=0.0,
+                y_max=1.0,
+                out_of_bounds="clip",
+            )
+            calibrator.fit(confidence_values, correct_values)
+    except (ValueError, TypeError):
+        return None, rows, 1
+    return calibrator, rows, 0
+
+
+def _apply_confidence_calibrator(
+    raw_confidence: float,
+    calibrator: Any | None,
+) -> float:
+    """Apply a fitted calibrator, falling back to the raw score if needed."""
+
+    raw_value = float(np.clip(raw_confidence, 0.0, 1.0))
+    if calibrator is None:
+        return raw_value
+    try:
+        if hasattr(calibrator, "predict_proba"):
+            calibrated = float(
+                calibrator.predict_proba([[raw_value]])[0, 1]
+            )
+        else:
+            calibrated = float(calibrator.predict([raw_value])[0])
+    except (ValueError, TypeError, IndexError):
+        return raw_value
+    return float(np.clip(calibrated, 0.0, 1.0))
 
 
 def _apply_rolling_confidence_calibration(
@@ -2664,7 +2834,16 @@ def prediction_to_dict(fitted: FittedDirectionModel) -> dict[str, Any]:
     direction = "up" if prob_up >= threshold else "down"
     direction_label = 1 if direction == "up" else 0
     margin = prob_up - threshold if direction == "up" else threshold - prob_up
-    confidence = float(np.clip(margin / 0.20, 0.0, 1.0))
+    raw_confidence = float(_raw_confidence_from_probability(prob_up, threshold))
+    calibrated_confidence = _apply_confidence_calibrator(
+        raw_confidence,
+        fitted.confidence_calibrator,
+    )
+    confidence_status = (
+        "已校准"
+        if fitted.confidence_calibration_fallback == 0
+        else "未校准（原始边界分数）"
+    )
     estimated_return = _estimate_directional_return(
         direction=direction,
         probability_up=prob_up,
@@ -2683,7 +2862,16 @@ def prediction_to_dict(fitted: FittedDirectionModel) -> dict[str, Any]:
         "probability_down": float(1.0 - prob_up),
         "decision_threshold": float(threshold),
         "direction_margin": float(margin),
-        "confidence": confidence,
+        # confidence 是面向用户的历史校准后方向正确概率。
+        "confidence": calibrated_confidence,
+        "raw_confidence": raw_confidence,
+        "calibrated_confidence": calibrated_confidence,
+        "confidence_calibration_status": confidence_status,
+        "confidence_calibration_rows": int(fitted.confidence_calibration_rows),
+        "confidence_calibration_method": fitted.confidence_calibration_method,
+        "confidence_calibration_fallback": int(
+            fitted.confidence_calibration_fallback
+        ),
         "estimated_next_return": float(estimated_return),
         "estimated_next_pct_change": float(estimated_return * 100.0),
         "estimated_next_close": float(estimated_close),
@@ -5170,12 +5358,13 @@ def _print_loop_validation_summary(
     *,
     output_path: str,
 ) -> None:
+    display_result = _format_result_frame_for_csv(result)
     print(
-        result.to_string(
+        display_result.to_string(
             index=False,
             formatters={
-                "confidence": lambda value: f"{value:.2%}",
-                "calibrated_confidence": lambda value: f"{value:.2%}",
+                "原始边界分数": lambda value: f"{value:.2%}",
+                "置信度": lambda value: f"{value:.2%}",
             },
         )
     )

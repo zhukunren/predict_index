@@ -306,7 +306,16 @@ def test_loop_confidence_is_returned_saved_and_shown(tmp_path: Path, capsys):
     calibration_summary = pd.read_csv(calibration_summary_path)
     assert "confidence" in result.columns
     assert result["confidence"].between(0.0, 1.0).all()
-    assert np.allclose(saved["confidence"], result["confidence"])
+    assert list(saved.columns) == list(core._PUBLIC_RESULT_COLUMNS)
+    assert "置信度" in saved.columns
+    assert np.allclose(saved["置信度"], result["confidence"])
+    assert "预测方向" in saved.columns
+    expected_directions = np.where(
+        result["predicted_pct_change"].to_numpy() > 0,
+        "上涨",
+        "下跌",
+    )
+    assert saved["预测方向"].tolist() == expected_directions.tolist()
     assert int(calibration["rows"].sum()) == len(result)
     assert calibration_summary.loc[0, "rows_used"] == len(result)
     progress_output = capsys.readouterr().err
@@ -333,6 +342,36 @@ def test_confidence_tracks_direction_reversals():
         0.65,
         guard_diagnostics,
     ) == pytest.approx(0.6)
+
+
+def test_prediction_script_writes_shared_csv_schema(tmp_path: Path):
+    from 预测脚本 import save_prediction_csv
+
+    output_path = tmp_path / "next_day_prediction.csv"
+    result = {
+        "last_date": "2026-09-14",
+        "estimated_next_return": 0.0125,
+        "estimated_next_close": 101.25,
+        "confidence": 0.42,
+        "raw_confidence": 0.30,
+        "calibrated_confidence": 0.42,
+        "confidence_calibration_status": "已校准",
+        "confidence_calibration_method": "platt",
+        "confidence_calibration_rows": 80,
+        "confidence_calibration_fallback": 0,
+    }
+
+    save_prediction_csv(result, output_path)
+    saved = pd.read_csv(output_path)
+
+    assert list(saved.columns) == list(core._PUBLIC_RESULT_COLUMNS)
+    assert saved.loc[0, "信号日期"] == 20260914
+    assert saved.loc[0, "预测方向"] == "上涨"
+    assert saved.loc[0, "预测次日涨跌幅"] == pytest.approx(0.0125)
+    assert saved.loc[0, "原始边界分数"] == pytest.approx(0.30)
+    assert saved.loc[0, "置信度"] == pytest.approx(0.42)
+    assert saved.loc[0, "置信度校准状态"] == "已校准"
+    assert pd.isna(saved.loc[0, "次日实际涨跌幅"])
 
 
 def test_confidence_calibration_report_matches_bin_accuracy():

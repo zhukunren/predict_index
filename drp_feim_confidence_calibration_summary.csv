@@ -1,2 +1,0 @@
-﻿rows_total,rows_used,rows_missing_confidence_or_result,mean_confidence,direction_accuracy,calibration_gap,absolute_calibration_gap,expected_calibration_error,max_calibration_error,brier_score
-10,10,0,0.64,0.7,0.05999999999999994,0.05999999999999994,0.2600000000000001,0.4,0.23066666666666671
