@@ -20,6 +20,7 @@ from .service import (
     PredictionDriftError,
     PredictionService,
     RefreshManager,
+    ShadowManager,
     ServiceNotReadyError,
 )
 
@@ -32,13 +33,32 @@ class AppContainer:
     def __init__(self, settings: Settings, service: PredictionService) -> None:
         self.settings = settings
         self.service = service
-        self.refresh_manager = RefreshManager(service)
+        self.shadow_manager = ShadowManager(service)
+        self.refresh_manager = RefreshManager(
+            service,
+            on_success=self._submit_shadow_after_refresh,
+        )
         self.scheduler = DailyRefreshScheduler(
             settings,
             self.refresh_manager,
             is_trading_day=service.is_sse_trading_day,
         )
         self.login_limiter = LoginRateLimiter()
+
+    def _submit_shadow_after_refresh(
+        self,
+        artifact,
+        actor: str | None,
+    ) -> None:
+        self.shadow_manager.submit(snapshot_id=artifact.snapshot_id, actor=actor)
+
+    def submit_active_shadow(self, *, actor: str | None, force: bool = False) -> tuple[str | None, bool]:
+        _, snapshot, _ = self.service._load_active_context()
+        return self.shadow_manager.submit(
+            snapshot_id=snapshot.id,
+            actor=actor,
+            force=force,
+        )
 
 
 def _client_host(request: Request) -> str:
@@ -78,7 +98,7 @@ def create_app(
     service: PredictionService | None = None,
     bootstrap: bool = True,
 ) -> FastAPI:
-    runtime_settings = settings or Settings.from_env()
+    runtime_settings = settings or Settings.from_config()
     prediction_service = service or PredictionService(runtime_settings)
     container = AppContainer(runtime_settings, prediction_service)
 
@@ -86,11 +106,17 @@ def create_app(
     async def lifespan(_app: FastAPI):
         container.service.initialize(bootstrap=bootstrap)
         container.scheduler.start()
+        if runtime_settings.bilstm_shadow_enabled:
+            try:
+                container.submit_active_shadow(actor="system")
+            except ServiceNotReadyError:
+                pass
         try:
             yield
         finally:
             container.scheduler.stop()
             container.refresh_manager.shutdown()
+            container.shadow_manager.shutdown()
             container.service.shutdown()
 
     app = FastAPI(
@@ -219,11 +245,13 @@ def create_app(
         if redirect:
             return redirect
         job_id = request.query_params.get("job")
+        shadow_run_id = request.query_params.get("shadow")
         try:
             data = container.service.dashboard_data()
         except ServiceNotReadyError:
             data = None
         job = container.refresh_manager.get(job_id) if job_id else None
+        shadow_run = container.shadow_manager.get(shadow_run_id) if shadow_run_id else None
         return TEMPLATES.TemplateResponse(
             request,
             "dashboard.html",
@@ -231,6 +259,7 @@ def create_app(
                 request,
                 data=data,
                 job=job,
+                shadow_run=shadow_run,
                 service_ready=data is not None,
             ),
         )
@@ -251,6 +280,24 @@ def create_app(
         )
         return RedirectResponse(url=f"/admin/?job={job_id}", status_code=303)
 
+    @app.post("/admin/shadow/bilstm", include_in_schema=False)
+    async def run_bilstm_shadow(request: Request):
+        actor = _admin_username(request)
+        if actor is None:
+            return RedirectResponse(url="/admin/login", status_code=303)
+        form = await request.form()
+        if not validate_csrf(request.session, str(form.get("csrf_token", ""))):
+            raise HTTPException(status_code=403, detail="CSRF 校验失败。")
+        run_id, created = container.submit_active_shadow(actor=actor, force=True)
+        if run_id is None:
+            raise HTTPException(status_code=503, detail="当前没有可用于影子计算的发布快照。")
+        container.service.record_audit(
+            actor,
+            "bilstm_shadow_requested" if created else "bilstm_shadow_joined_existing_run",
+            run_id,
+        )
+        return RedirectResponse(url=f"/admin/?shadow={run_id}", status_code=303)
+
     @app.get("/admin/jobs/{job_id}", include_in_schema=False)
     def job_status(request: Request, job_id: str) -> Response:
         redirect = _admin_redirect(request)
@@ -268,6 +315,38 @@ def create_app(
                 "created_at": job.created_at.isoformat(),
                 "finished_at": job.finished_at.isoformat() if job.finished_at else None,
             }
+        )
+
+    @app.get("/admin/shadow-runs/{run_id}", include_in_schema=False)
+    def shadow_status(request: Request, run_id: str) -> Response:
+        redirect = _admin_redirect(request)
+        if redirect:
+            return redirect
+        run = container.shadow_manager.get(run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="找不到 BiLSTM 影子任务。")
+        return JSONResponse(
+            {
+                "id": run.id,
+                "engine": run.engine,
+                "status": run.status,
+                "snapshot_id": run.snapshot_id,
+                "message": run.message,
+                "created_at": run.created_at.isoformat(),
+                "finished_at": run.finished_at.isoformat() if run.finished_at else None,
+            }
+        )
+
+    @app.get("/admin/shadow-runs/{run_id}/results.csv", include_in_schema=False)
+    def shadow_result_download(request: Request, run_id: str):
+        redirect = _admin_redirect(request)
+        if redirect:
+            return redirect
+        path = container.service.shadow_result_file(run_id)
+        return FileResponse(
+            path,
+            media_type="text/csv",
+            filename=f"bilstm_shadow_{run_id}.csv",
         )
 
     @app.get("/admin/archives", include_in_schema=False)

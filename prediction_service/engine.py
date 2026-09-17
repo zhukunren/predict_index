@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
 
@@ -61,9 +61,17 @@ def model_configuration(settings: Settings) -> tuple[dict[str, Any], str]:
         for key, value in options.items()
         if not key.endswith("_path") and key != "output_path"
     }
+    options["signal_engine"] = settings.signal_engine
+    if settings.signal_engine == "bilstm_causal":
+        options["bilstm_refit_interval"] = settings.bilstm_shadow_refit_interval
+        options["recent_failure_guard"] = False
     payload = _jsonable(
         {
-            "algorithm_id": pipeline.prediction_core.SCRIPT_ACCEPTED_ALGORITHM_ID,
+            "algorithm_id": (
+                pipeline.prediction_core.SCRIPT_ACCEPTED_ALGORITHM_ID
+                if settings.signal_engine == pipeline.prediction_core.SCRIPT_SIGNAL_ENGINE
+                else settings.signal_engine
+            ),
             "signal_engine": settings.signal_engine,
             "validation_days": settings.validation_days,
             "direction_prediction_config": asdict(config),
@@ -172,6 +180,35 @@ def calculate_results(features: pd.DataFrame, settings: Settings) -> pd.DataFram
         validation_days=settings.validation_days,
         signal_engine=settings.signal_engine,
         progress=False,
+    )
+
+
+def shadow_settings(settings: Settings) -> Settings:
+    """Return the fixed, non-public BiLSTM research configuration."""
+
+    return replace(
+        settings,
+        signal_engine="bilstm_causal",
+        validation_days=settings.bilstm_shadow_validation_days,
+    )
+
+
+def calculate_bilstm_shadow_results(
+    features: pd.DataFrame,
+    settings: Settings,
+) -> pd.DataFrame:
+    """Run the causal BiLSTM shadow without changing the public engine."""
+
+    shadow = shadow_settings(settings)
+    return pipeline.run_validation_and_prediction(
+        canonicalize_features(features),
+        validation_days=shadow.validation_days,
+        signal_engine=shadow.signal_engine,
+        progress=False,
+        loop_overrides={
+            "bilstm_refit_interval": shadow.bilstm_shadow_refit_interval,
+            "recent_failure_guard": False,
+        },
     )
 
 

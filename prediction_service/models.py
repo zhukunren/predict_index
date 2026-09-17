@@ -127,6 +127,34 @@ class RefreshJob(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class ShadowRun(Base):
+    """A non-public model run evaluated against the same immutable snapshot."""
+
+    __tablename__ = "shadow_runs"
+    __table_args__ = (
+        UniqueConstraint("snapshot_id", "release_id", name="uq_shadow_snapshot_release"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    engine: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    release_id: Mapped[str] = mapped_column(
+        ForeignKey("model_releases.id"), nullable=False, index=True
+    )
+    snapshot_id: Mapped[str] = mapped_column(
+        ForeignKey("market_snapshots.id"), nullable=False, index=True
+    )
+    status: Mapped[str] = mapped_column(String(30), nullable=False, index=True)
+    requested_by: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    result_csv_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    result_csv_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    manifest_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    row_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class AuditLog(Base):
     __tablename__ = "audit_log"
 

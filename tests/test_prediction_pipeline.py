@@ -43,6 +43,24 @@ def _config() -> core.DirectionPredictionConfig:
     )
 
 
+def _bilstm_causal_config() -> core.DirectionPredictionConfig:
+    return core.DirectionPredictionConfig(
+        lookback=5,
+        neutral_band=0.0,
+        min_train_sequences=20,
+        hidden_size=4,
+        dense_size=4,
+        dropout=0.0,
+        epochs=1,
+        batch_size=16,
+        patience=1,
+        device="cpu",
+        external_feature_mode="none",
+        drop_zero_volume=True,
+        use_timeseries_cv=False,
+    )
+
+
 def _options() -> dict[str, object]:
     return {
         "signal_engine": "volatility_rule",
@@ -153,6 +171,51 @@ def test_future_market_changes_cannot_rewrite_prior_predictions():
     pd.testing.assert_frame_equal(
         original.loc[original["trade_date"].le(cutoff_date), prediction_columns],
         altered.loc[altered["trade_date"].le(cutoff_date), prediction_columns],
+    )
+
+
+def test_bilstm_live_prediction_matches_causal_replay_and_ignores_future_rows():
+    data = _market_frame(90)
+    cutoff = 61
+    config = _bilstm_causal_config()
+    options = _options()
+    options.update(
+        signal_engine="bilstm_causal",
+        bilstm_refit_interval=5,
+        recent_failure_guard=False,
+        confidence_calibration_window=None,
+        return_calibration_window=0,
+    )
+    live = core.predict_next_day(data.iloc[: cutoff + 1], config=config, **options)
+    replay = core.loop_validate_prediction_results(
+        data,
+        config=config,
+        start_date=data["trade_date"].iloc[cutoff],
+        end_date=data["trade_date"].iloc[cutoff],
+        **options,
+    )
+    changed = data.copy()
+    changed.loc[changed.index > cutoff, ["open", "high", "low", "close", "pre_close"]] *= 1.7
+    changed.loc[changed.index > cutoff, ["vol", "amount"]] *= 2.0
+    replay_with_future_changed = core.loop_validate_prediction_results(
+        changed,
+        config=config,
+        start_date=data["trade_date"].iloc[cutoff],
+        end_date=data["trade_date"].iloc[cutoff],
+        **options,
+    )
+
+    row = replay.iloc[0]
+    assert live["predicted_label"] == row["predicted_label"]
+    assert live["estimated_next_return"] == pytest.approx(
+        row["predicted_pct_change"], abs=1e-12
+    )
+    assert live["estimated_next_close"] == pytest.approx(row["predicted_close"])
+    assert live["raw_confidence"] == pytest.approx(row["confidence"])
+    assert live["calibrated_confidence"] == pytest.approx(row["confidence"])
+    pd.testing.assert_frame_equal(
+        replay.loc[:, ["predicted_label", "predicted_pct_change", "predicted_close", "confidence"]],
+        replay_with_future_changed.loc[:, ["predicted_label", "predicted_pct_change", "predicted_close", "confidence"]],
     )
 
 

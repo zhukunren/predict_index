@@ -8,7 +8,7 @@
   <div class="login-brand">上证指数预测</div>
   <h1 id="login-title">管理员登录</h1>
   {% if setup_required %}
-  <p class="notice error">服务尚未设置管理员密码。请配置 <code>PREDICTION_SERVICE_ADMIN_PASSWORD</code> 后重启服务。</p>
+  <p class="notice error">服务尚未设置管理员密码。请填写 <code>config.ini</code> 中的“管理员/密码”后重启服务。</p>
   {% endif %}
   {% if error %}
   <p class="notice error">{{ error }}</p>

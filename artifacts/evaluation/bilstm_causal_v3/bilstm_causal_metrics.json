@@ -1,0 +1,42 @@
+{
+  "status": "reused_completed_candidate",
+  "elapsed_seconds": 0.0,
+  "metrics": {
+    "rows": 412,
+    "start_date": 20250102,
+    "end_date": 20260911,
+    "correct": 239,
+    "accuracy": 0.5800970873786407,
+    "balanced_accuracy": 0.5814971107967488,
+    "recall_down": 0.5921787709497207,
+    "recall_up": 0.5708154506437768,
+    "brier": 0.2456744114588197,
+    "raw_brier": 0.4889422866709605,
+    "return_mae": 0.006211331897418861,
+    "return_rmse": 0.008941875902762391,
+    "actual_up_rows": 233,
+    "predicted_up_rows": 206
+  },
+  "stability": {
+    "monthly_periods": 21,
+    "monthly_accuracy_std": 0.11179004597826823,
+    "monthly_accuracy_min": 0.4090909090909091,
+    "monthly_balanced_accuracy_std": 0.11080340427049212,
+    "rolling_20_accuracy_std": 0.12246259190820427,
+    "rolling_20_accuracy_min": 0.3,
+    "direction_flip_rate": 0.0827250608272506
+  },
+  "predictions_sha256": "3004db92f7832bb81dc846fd3fab6c5702f0672ee37dd9b9a68c6373e6bb1267",
+  "provenance": {
+    "artifact_dir": "artifacts/evaluation/bilstm_causal_v1",
+    "contract_sha256": "de3d81b3878147298da60e031fcd1051473fc9744b7218e27201b5796f878780",
+    "predictions_sha256": "3004db92f7832bb81dc846fd3fab6c5702f0672ee37dd9b9a68c6373e6bb1267",
+    "parity_sha256": "2077c6089b9850a9195125444966cb3834263218f9f77ddbce43d02739e1a646",
+    "source_sha256": {
+      "\u5faa\u73af\u9a8c\u8bc1\u811a\u672c.py": "dbc34bd027da8aa62ff4ce549049c9bcdc374f209dfc8587bf6b8283af6cfc64",
+      "return_calibration.py": "4aa5b2b1a392946aab028156293c9f515bfb4416bc246b1f8e961877ab1df65f",
+      "regularized_direction.py": "fa550793912bd79e22b917907882221e9915dbf2bd3cc72923f9916bcf20cede"
+    },
+    "reused_because": "v1 passed five independent predict_next_day versus replay probes, and its BiLSTM-relevant fixed options match this v2 contract."
+  }
+}

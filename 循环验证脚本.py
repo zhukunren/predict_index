@@ -66,6 +66,7 @@ ConfidenceCalibrationMethod = Literal["platt", "isotonic"]
 SignalEngine = Literal[
     "regularized_trees",
     "bilstm",
+    "bilstm_causal",
     "volatility_rule",
     "state_veto_rule",
     "stability_rule",
@@ -79,6 +80,7 @@ _CLI_MODES: tuple[CliMode, ...] = ("predict", "loop_validate", "walk_forward")
 _SIGNAL_ENGINES: tuple[SignalEngine, ...] = (
     "regularized_trees",
     "bilstm",
+    "bilstm_causal",
     "volatility_rule",
     "state_veto_rule",
     "stability_rule",
@@ -133,7 +135,7 @@ SCRIPT_ENCODING = "utf-8-sig"
 # 循环验证的日期范围。start/end 都为 None 时，验证最近 SCRIPT_PERIODS 个可验证交易日。
 SCRIPT_START_DATE: str | None = None
 SCRIPT_END_DATE: str | None = None
-SCRIPT_PERIODS = 20  # 回测周期
+SCRIPT_PERIODS = 600  # 回测周期
 
 SCRIPT_EPOCHS = 10
 SCRIPT_LOOKBACK = 30
@@ -159,6 +161,7 @@ SCRIPT_SHOW_PROGRESS = True
 # Other engines remain explicit research/challenger choices and do not replace it.
 SCRIPT_ACCEPTED_ALGORITHM_ID = "rank_weighted_state_veto_v1"
 SCRIPT_SIGNAL_ENGINE = "state_veto_rule"
+SCRIPT_BILSTM_REFIT_INTERVAL = 5
 SCRIPT_RULE_THRESHOLD_END_DATE: str | None = "20241231"
 SCRIPT_RULE_CALIBRATION_START_DATE: str | None = "20240101"
 SCRIPT_RULE_CALIBRATION_END_DATE: str | None = "20241231"
@@ -1001,6 +1004,7 @@ def loop_validate_prediction_results(
     ),
     progress: bool = True,
     signal_engine: SignalEngine = SCRIPT_SIGNAL_ENGINE,
+    bilstm_refit_interval: int = SCRIPT_BILSTM_REFIT_INTERVAL,
     rule_threshold_end_date: str | int | pd.Timestamp | None = None,
     rule_calibration_start_date: str | int | pd.Timestamp | None = None,
     rule_calibration_end_date: str | int | pd.Timestamp | None = None,
@@ -1108,6 +1112,8 @@ def loop_validate_prediction_results(
         or (return_calibration_window and return_calibration_window < return_calibration_min_rows)
     ):
         raise ValueError("Return calibration requires a nonnegative window and at least two rows.")
+    if bilstm_refit_interval < 1:
+        raise ValueError("bilstm_refit_interval must be positive.")
     warmup_windows = rolling_windows + ((return_calibration_window,) if return_calibration_window else ())
     validation_range = _resolve_loop_validation_range(
         base=base,
@@ -1168,6 +1174,7 @@ def loop_validate_prediction_results(
     state_veto_masks: list[tuple[str, np.ndarray]] | None = None
     model_probabilities: np.ndarray | None = None
     model_training_rows: np.ndarray | None = None
+    bilstm_fitted_by_refit_index: dict[int, FittedDirectionModel] = {}
     if signal_engine == "regularized_trees":
         from regularized_direction import rolling_probabilities
 
@@ -1334,6 +1341,16 @@ def loop_validate_prediction_results(
                 ml_top_k=nested_ml_top_k,
             )
             predicted_pct_change = signal.predicted_return
+        elif signal_engine == "bilstm_causal":
+            fitted_result, bilstm_diagnostics = _bilstm_causal_prediction(
+                base=base,
+                idx=idx,
+                config=cfg,
+                fitted_by_refit_index=bilstm_fitted_by_refit_index,
+                refit_interval=bilstm_refit_interval,
+            )
+            selector_diagnostics.update(bilstm_diagnostics)
+            predicted_pct_change = float(fitted_result["estimated_next_return"])
         else:
             train_frame = base.iloc[: idx + 1].copy()
             fitted = fit_direction_model(train_frame, config=cfg)
@@ -2982,6 +2999,65 @@ def prediction_to_dict(fitted: FittedDirectionModel) -> dict[str, Any]:
             "dropout": fitted.config.dropout,
             "device": fitted.device,
         },
+    }
+
+
+def _bilstm_causal_prediction(
+    *,
+    base: pd.DataFrame,
+    idx: int,
+    config: DirectionPredictionConfig,
+    fitted_by_refit_index: dict[int, FittedDirectionModel],
+    refit_interval: int,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Predict an index from a fixed, strictly historical BiLSTM refit point.
+
+    The absolute index anchor is deliberately independent of the requested
+    evaluation range. A one-day live invocation and a long historical replay
+    therefore select the same refit point and consume the same model state.
+    """
+
+    if refit_interval < 1:
+        raise ValueError("bilstm_refit_interval must be positive.")
+    refit_idx = idx - (idx % refit_interval)
+    fitted = fitted_by_refit_index.get(refit_idx)
+    if fitted is None:
+        fitted = fit_direction_model(base.iloc[: refit_idx + 1].copy(), config=config)
+        # The loop advances monotonically, so a model from an earlier refit
+        # block can never be selected again. Retain only the active block.
+        fitted_by_refit_index.clear()
+        fitted_by_refit_index[refit_idx] = fitted
+
+    current = _prepare_market_data(base.iloc[: idx + 1].copy(), config)
+    if current.feature_columns != fitted.feature_columns:
+        raise ValueError("BiLSTM refit feature columns changed inside a causal block.")
+    latest_sequence_scaled = _scale_sequences(
+        current.latest_sequence[None, :, :],
+        fitted.scaler,
+    )
+    probability_up = float(
+        _predict_proba(
+            fitted.model,
+            latest_sequence_scaled,
+            fitted.device,
+            fitted.config.batch_size,
+        )[0]
+    )
+    current_fitted = replace(
+        fitted,
+        latest_sequence_scaled=latest_sequence_scaled,
+        latest_date=current.latest_date,
+        latest_close=current.latest_close,
+        probability_up=probability_up,
+        original_rows=current.original_rows,
+        cleaned_rows=current.cleaned_rows,
+    )
+    return prediction_to_dict(current_fitted), {
+        "bilstm_refit_index": int(refit_idx),
+        "bilstm_refit_trade_date": int(
+            base["date"].iloc[refit_idx].strftime("%Y%m%d")
+        ),
+        "bilstm_refit_age": int(idx - refit_idx),
     }
 
 
@@ -5095,6 +5171,12 @@ def _add_signal_engine_cli_arguments(parser: argparse.ArgumentParser) -> None:
         default=SCRIPT_SIGNAL_ENGINE,
     )
     parser.add_argument(
+        "--bilstm-refit-interval",
+        type=int,
+        default=SCRIPT_BILSTM_REFIT_INTERVAL,
+        help="固定因果 BiLSTM 引擎的重训交易日间隔。",
+    )
+    parser.add_argument(
         "--rule-threshold-end-date",
         default=SCRIPT_RULE_THRESHOLD_END_DATE,
     )
@@ -5348,6 +5430,7 @@ _LOOP_CLI_PASSTHROUGH_ARGUMENTS = (
     "confidence_calibration_min_rows",
     "confidence_calibration_method",
     "signal_engine",
+    "bilstm_refit_interval",
     "rule_threshold_end_date",
     "rule_calibration_start_date",
     "rule_calibration_end_date",

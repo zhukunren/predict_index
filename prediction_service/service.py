@@ -29,6 +29,7 @@ from .engine import (
     HistoricalMarketDataDriftError,
     calculate_results,
     calculate_results_with_diagnostics,
+    calculate_bilstm_shadow_results,
     canonicalize_features,
     data_as_of,
     feature_close_by_date,
@@ -40,6 +41,7 @@ from .engine import (
     public_csv_bytes,
     public_frame,
     release_id,
+    shadow_settings,
     target_dates_by_signal,
 )
 from .models import (
@@ -51,6 +53,7 @@ from .models import (
     PredictionLedger,
     Publication,
     RefreshJob,
+    ShadowRun,
     utcnow,
 )
 from .security import ensure_bootstrap_admin
@@ -112,6 +115,7 @@ class PredictionService:
         database: Database | None = None,
         calculation_function: CalculationFunction | None = None,
         diagnostics_calculation_function: DiagnosticsCalculationFunction | None = None,
+        shadow_calculation_function: CalculationFunction | None = None,
     ) -> None:
         self.settings = settings
         self.database = database or Database(settings)
@@ -124,6 +128,9 @@ class PredictionService:
                 if calculation_function is None
                 else None
             )
+        )
+        self.shadow_calculation_function = (
+            shadow_calculation_function or calculate_bilstm_shadow_results
         )
         self._operation_lock = threading.RLock()
         self._calendar_lock = threading.Lock()
@@ -144,11 +151,11 @@ class PredictionService:
                 actor="system",
             )
 
-    def _ensure_release(self, session) -> ModelRelease:
-        release = session.scalar(select(ModelRelease).order_by(ModelRelease.created_at.desc()))
+    def _ensure_release_for_settings(self, session, settings: Settings) -> ModelRelease:
+        identifier, config, config_sha256, source_sha256 = release_id(settings)
+        release = session.get(ModelRelease, identifier)
         if release is not None:
             return release
-        identifier, config, config_sha256, source_sha256 = release_id(self.settings)
         release = ModelRelease(
             id=identifier,
             algorithm_id=str(config["algorithm_id"]),
@@ -160,11 +167,22 @@ class PredictionService:
         session.flush()
         return release
 
+    def _ensure_release(self, session) -> ModelRelease:
+        """Ensure the default release exists without selecting a shadow release."""
+
+        publication = session.scalar(
+            select(Publication)
+            .where(Publication.is_active.is_(True))
+            .order_by(Publication.published_at.desc())
+        )
+        if publication is not None:
+            release = session.get(ModelRelease, publication.release_id)
+            if release is not None:
+                return release
+        return self._ensure_release_for_settings(session, self.settings)
+
     def _active_release(self, session) -> ModelRelease:
-        release = session.scalar(select(ModelRelease).order_by(ModelRelease.created_at.desc()))
-        if release is None:
-            raise ServiceNotReadyError("尚未初始化模型版本。")
-        return release
+        return self._ensure_release(session)
 
     def _assert_runtime_release(self, release: ModelRelease) -> None:
         identifier, _, _, _ = release_id(self.settings)
@@ -175,8 +193,7 @@ class PredictionService:
             )
 
     def release_upgrade_required(self) -> bool:
-        with self.database.session() as session:
-            release = self._active_release(session)
+        _, _, release = self._load_active_context()
         identifier, _, _, _ = release_id(self.settings)
         return release.id != identifier
 
@@ -233,6 +250,7 @@ class PredictionService:
                 source="release_promotion",
                 raw_frames=None,
                 actor=actor,
+                release_id_override=identifier,
             )
 
     def _active_publication(self) -> Publication | None:
@@ -365,6 +383,64 @@ class PredictionService:
             )
         return result, plan
 
+    def _persist_prediction_plan(
+        self,
+        session,
+        *,
+        plan: list[CandidatePrediction],
+        release: ModelRelease,
+        snapshot_id: str,
+    ) -> None:
+        """Insert immutable forecasts and one-time outcomes for one release."""
+
+        for item in plan:
+            if not item.is_new:
+                continue
+            payload = item.payload
+            session.add(
+                PredictionLedger(
+                    id=item.prediction_id,
+                    release_id=release.id,
+                    snapshot_id=snapshot_id,
+                    signal_date=item.signal_date,
+                    target_date=None,
+                    base_close=item.base_close,
+                    predicted_return=float(payload["predicted_return"]),
+                    predicted_label=int(payload["predicted_label"]),
+                    predicted_close=float(payload["predicted_close"]),
+                    raw_confidence=float(payload["raw_confidence"]),
+                    calibrated_confidence=float(payload["calibrated_confidence"]),
+                    return_calibration_scale=(
+                        float(payload["return_calibration_scale"])
+                        if payload["return_calibration_scale"] is not None
+                        else None
+                    ),
+                    prediction_fingerprint=item.fingerprint,
+                    payload_json=json.dumps(payload, ensure_ascii=False, sort_keys=True),
+                )
+            )
+
+        session.flush()
+        existing_outcomes = self._existing_outcomes(
+            session, [item.prediction_id for item in plan]
+        )
+        for item in plan:
+            if item.outcome is None or item.prediction_id in existing_outcomes:
+                continue
+            outcome = item.outcome
+            session.add(
+                OutcomeResolution(
+                    prediction_id=item.prediction_id,
+                    snapshot_id=snapshot_id,
+                    target_trade_date=str(outcome["target_trade_date"]),
+                    actual_return=float(outcome["actual_return"]),
+                    actual_close=float(outcome["actual_close"]),
+                    correct=bool(outcome["correct"]),
+                    outcome_fingerprint=str(item.outcome_fingerprint),
+                    payload_json=json.dumps(outcome, ensure_ascii=False, sort_keys=True),
+                )
+            )
+
     def _render_artifact(
         self,
         *,
@@ -435,6 +511,21 @@ class PredictionService:
         if sha256_file(features_path) != snapshot.features_sha256:
             raise PredictionDriftError("归档特征文件哈希不匹配。")
 
+        self._assert_manifest_integrity(manifest_path)
+
+        if publication is not None:
+            public_path = Path(publication.public_csv_path)
+            if (
+                not public_path.exists()
+                or sha256_file(public_path) != publication.public_csv_sha256
+            ):
+                raise PredictionDriftError("已发布 CSV 哈希不匹配。")
+
+    @staticmethod
+    def _assert_manifest_integrity(manifest_path: Path) -> None:
+        if not manifest_path.exists():
+            raise PredictionDriftError("归档清单文件缺失。")
+
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         expected_files = manifest.get("files")
         if not isinstance(expected_files, dict):
@@ -444,14 +535,6 @@ class PredictionService:
             candidate = archive_root / str(relative_path)
             if not candidate.exists() or sha256_file(candidate) != expected_hash:
                 raise PredictionDriftError(f"归档文件哈希不匹配：{relative_path}")
-
-        if publication is not None:
-            public_path = Path(publication.public_csv_path)
-            if (
-                not public_path.exists()
-                or sha256_file(public_path) != publication.public_csv_sha256
-            ):
-                raise PredictionDriftError("已发布 CSV 哈希不匹配。")
 
     def _current_canonical_features(self) -> tuple[pd.DataFrame | None, MarketSnapshot | None]:
         publication = self._active_publication()
@@ -473,6 +556,7 @@ class PredictionService:
         source: str,
         raw_frames: dict[str, pd.DataFrame] | None,
         actor: str | None,
+        release_id_override: str | None = None,
     ) -> VerifiedArtifact:
         """Verify history, append only new values, archive, and atomically publish."""
 
@@ -491,7 +575,13 @@ class PredictionService:
             as_of = data_as_of(canonical_features)
             snapshot_id = str(uuid.uuid4())
             with self.database.session() as session:
-                release = self._active_release(session)
+                release = (
+                    session.get(ModelRelease, release_id_override)
+                    if release_id_override is not None
+                    else self._active_release(session)
+                )
+                if release is None:
+                    raise ServiceNotReadyError("找不到目标模型发布版本。")
             self._assert_runtime_release(release)
             diagnostics = pd.DataFrame()
             diagnostics_path = self.settings.root_dir / f".diagnostics-{snapshot_id}.csv"
@@ -564,59 +654,12 @@ class PredictionService:
                     )
                 )
                 session.flush()
-
-                for item in plan:
-                    if item.is_new:
-                        payload = item.payload
-                        session.add(
-                            PredictionLedger(
-                                id=item.prediction_id,
-                                release_id=release.id,
-                                snapshot_id=snapshot_id,
-                                signal_date=item.signal_date,
-                                target_date=None,
-                                base_close=item.base_close,
-                                predicted_return=float(payload["predicted_return"]),
-                                predicted_label=int(payload["predicted_label"]),
-                                predicted_close=float(payload["predicted_close"]),
-                                raw_confidence=float(payload["raw_confidence"]),
-                                calibrated_confidence=float(
-                                    payload["calibrated_confidence"]
-                                ),
-                                return_calibration_scale=(
-                                    float(payload["return_calibration_scale"])
-                                    if payload["return_calibration_scale"] is not None
-                                    else None
-                                ),
-                                prediction_fingerprint=item.fingerprint,
-                                payload_json=json.dumps(
-                                    payload, ensure_ascii=False, sort_keys=True
-                                ),
-                            )
-                        )
-
-                session.flush()
-                existing_outcomes = self._existing_outcomes(
-                    session, [item.prediction_id for item in plan]
+                self._persist_prediction_plan(
+                    session,
+                    plan=plan,
+                    release=release,
+                    snapshot_id=snapshot_id,
                 )
-                for item in plan:
-                    if item.outcome is None or item.prediction_id in existing_outcomes:
-                        continue
-                    outcome = item.outcome
-                    session.add(
-                        OutcomeResolution(
-                            prediction_id=item.prediction_id,
-                            snapshot_id=snapshot_id,
-                            target_trade_date=str(outcome["target_trade_date"]),
-                            actual_return=float(outcome["actual_return"]),
-                            actual_close=float(outcome["actual_close"]),
-                            correct=bool(outcome["correct"]),
-                            outcome_fingerprint=str(item.outcome_fingerprint),
-                            payload_json=json.dumps(
-                                outcome, ensure_ascii=False, sort_keys=True
-                            ),
-                        )
-                    )
 
                 session.execute(
                     update(Publication)
@@ -674,10 +717,12 @@ class PredictionService:
             sleep_seconds=self.settings.retry_sleep_seconds,
             rate_limit_sleep_seconds=self.settings.rate_limit_sleep_seconds,
         )
+        token = self._configured_tushare_token()
         end_date = pd.Timestamp.now(tz="Asia/Shanghai").strftime("%Y%m%d")
         datasets = fetch_all(
             self.settings.history_start_date,
             end_date,
+            token=token,
             output_dir=self.settings.root_dir / "transient_fetch",
             save=False,
             retry_config=retry_config,
@@ -696,6 +741,12 @@ class PredictionService:
         }
         return features, raw_frames
 
+    def _configured_tushare_token(self) -> str:
+        token = self.settings.tushare_token
+        if token:
+            return token
+        raise RuntimeError("服务未在 config.ini 的 [Tushare] 令牌中设置 Tushare token。")
+
     def is_sse_trading_day(self, business_date: str) -> bool:
         """Use Tushare's SSE calendar, falling back to weekdays on API failure."""
 
@@ -709,7 +760,7 @@ class PredictionService:
         try:
             from 数据拉取脚本_tushare import get_pro
 
-            calendar = get_pro().trade_cal(
+            calendar = get_pro(self._configured_tushare_token()).trade_cal(
                 exchange="SSE",
                 start_date=business_date,
                 end_date=business_date,
@@ -741,6 +792,245 @@ class PredictionService:
             raw_frames=raw_frames,
             actor=actor,
         )
+
+    def _shadow_runtime_settings(self) -> Settings:
+        return shadow_settings(self.settings)
+
+    def request_bilstm_shadow(
+        self,
+        snapshot_id: str,
+        *,
+        actor: str | None,
+    ) -> tuple[ShadowRun, bool]:
+        """Create or requeue one non-public causal BiLSTM run for a snapshot."""
+
+        with self.database.session() as session:
+            snapshot = session.get(MarketSnapshot, snapshot_id)
+            if snapshot is None:
+                raise FileNotFoundError("找不到影子运行所需的行情快照。")
+            shadow_runtime = self._shadow_runtime_settings()
+            release = self._ensure_release_for_settings(session, shadow_runtime)
+            existing = session.scalar(
+                select(ShadowRun).where(
+                    ShadowRun.snapshot_id == snapshot_id,
+                    ShadowRun.release_id == release.id,
+                )
+            )
+            if existing is not None:
+                if existing.status in {"queued", "running", "succeeded"}:
+                    return existing, False
+                existing.status = "queued"
+                existing.requested_by = actor
+                existing.message = None
+                existing.started_at = None
+                existing.finished_at = None
+                existing.result_csv_path = None
+                existing.result_csv_sha256 = None
+                existing.manifest_path = None
+                existing.row_count = None
+                return existing, True
+            run = ShadowRun(
+                id=str(uuid.uuid4()),
+                engine="bilstm_causal",
+                release_id=release.id,
+                snapshot_id=snapshot_id,
+                status="queued",
+                requested_by=actor,
+            )
+            session.add(run)
+            session.flush()
+            return run, True
+
+    def run_bilstm_shadow(self, run_id: str) -> ShadowRun:
+        """Calculate a shadow run without mutating public publication state."""
+
+        with self.database.session() as session:
+            run = session.get(ShadowRun, run_id)
+            if run is None:
+                raise FileNotFoundError("找不到影子运行任务。")
+            if run.status == "succeeded":
+                return run
+            snapshot = session.get(MarketSnapshot, run.snapshot_id)
+            release = session.get(ModelRelease, run.release_id)
+            publication = session.scalar(
+                select(Publication)
+                .where(Publication.snapshot_id == run.snapshot_id)
+                .order_by(Publication.published_at.desc())
+            )
+            if snapshot is None or release is None:
+                raise ServiceNotReadyError("影子运行缺少快照或模型版本。")
+            run.status = "running"
+            run.started_at = utcnow()
+            run.message = None
+            snapshot_id = snapshot.id
+            release_id_value = release.id
+
+        self._assert_archive_integrity(snapshot, publication)
+        features = pd.read_csv(snapshot.features_path, encoding="utf-8-sig")
+        shadow_runtime = self._shadow_runtime_settings()
+        current_release_id, _, _, _ = release_id(shadow_runtime)
+        if release_id_value != current_release_id:
+            raise ModelReleaseMismatchError(
+                "影子模型代码或参数已变化；请为当前快照创建新的影子运行。"
+            )
+
+        result = self.shadow_calculation_function(features, self.settings)
+        result, plan = self._candidate_plan(
+            features=features,
+            release=release,
+            snapshot_id=snapshot_id,
+            allow_new=True,
+            result=result,
+        )
+        artifact = self._render_artifact(
+            result=result,
+            plan=plan,
+            snapshot_id=snapshot_id,
+            release_id=release.id,
+            as_of=snapshot.data_as_of,
+        )
+        archive = write_daily_archive(
+            archive_root=self.settings.shadow_archive_dir,
+            snapshot_id=run_id,
+            data_as_of=snapshot.data_as_of,
+            features=features,
+            public_csv=artifact.csv_bytes,
+            raw_frames=None,
+            manifest={
+                "source": "shadow_bilstm_causal",
+                "market_snapshot_id": snapshot_id,
+                "market_snapshot_features_sha256": snapshot.features_sha256,
+                "release_id": release.id,
+                "source_bundle_sha256": release.source_bundle_sha256,
+                "config_sha256": release.config_sha256,
+                "public_csv_sha256": artifact.csv_sha256,
+                "prediction_fingerprints": {
+                    item.signal_date: item.fingerprint for item in plan
+                },
+            },
+        )
+
+        with self.database.session() as session:
+            run = session.get(ShadowRun, run_id)
+            release = session.get(ModelRelease, release_id_value)
+            if run is None or release is None:
+                raise ServiceNotReadyError("影子运行在写入前丢失。")
+            self._persist_prediction_plan(
+                session,
+                plan=plan,
+                release=release,
+                snapshot_id=snapshot_id,
+            )
+            run.status = "succeeded"
+            run.result_csv_path = str(archive.results_path.resolve())
+            run.result_csv_sha256 = artifact.csv_sha256
+            run.manifest_path = str(archive.manifest_path.resolve())
+            run.row_count = len(artifact.public_frame)
+            run.message = "BiLSTM 影子预测已完成，未影响公开发布。"
+            run.finished_at = utcnow()
+            session.add(
+                AuditLog(
+                    actor=run.requested_by,
+                    action="bilstm_shadow_succeeded",
+                    detail=json.dumps(
+                        {
+                            "shadow_run_id": run.id,
+                            "snapshot_id": snapshot_id,
+                            "release_id": release.id,
+                            "rows": run.row_count,
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+            )
+            return run
+
+    def mark_bilstm_shadow_failed(self, run_id: str, message: str) -> None:
+        with self.database.session() as session:
+            run = session.get(ShadowRun, run_id)
+            if run is None:
+                return
+            run.status = "failed"
+            run.message = message
+            run.finished_at = utcnow()
+            session.add(
+                AuditLog(
+                    actor=run.requested_by,
+                    action="bilstm_shadow_failed",
+                    detail=json.dumps({"shadow_run_id": run_id, "message": message}, ensure_ascii=False),
+                )
+            )
+
+    def _shadow_run_metrics(self, run: ShadowRun) -> dict[str, Any] | None:
+        if (
+            run.status != "succeeded"
+            or not run.result_csv_path
+            or not run.result_csv_sha256
+            or not run.manifest_path
+        ):
+            return None
+        result_path = Path(run.result_csv_path)
+        manifest_path = Path(run.manifest_path)
+        if not result_path.exists() or sha256_file(result_path) != run.result_csv_sha256:
+            raise PredictionDriftError("BiLSTM 影子结果 CSV 哈希不匹配。")
+        self._assert_manifest_integrity(manifest_path)
+        frame = pd.read_csv(result_path, encoding="utf-8-sig")
+        validation = frame.loc[frame["结果类型"].eq("循环验证")].copy()
+        correct = validation["方向预测正确"].astype("boolean")
+        up = validation.loc[validation["预测方向"].eq("上涨")]
+        down = validation.loc[validation["预测方向"].eq("下跌")]
+        up_accuracy = float(up["方向预测正确"].astype("boolean").mean()) if len(up) else None
+        down_accuracy = float(down["方向预测正确"].astype("boolean").mean()) if len(down) else None
+        return {
+            "rows": len(validation),
+            "accuracy": float(correct.mean()) if len(validation) else None,
+            "balanced_accuracy": (
+                (up_accuracy + down_accuracy) / 2.0
+                if up_accuracy is not None and down_accuracy is not None
+                else None
+            ),
+            "mean_confidence": (
+                float(pd.to_numeric(validation["置信度"], errors="coerce").mean())
+                if len(validation)
+                else None
+            ),
+        }
+
+    def shadow_dashboard_data(self) -> dict[str, Any]:
+        with self.database.session() as session:
+            run = session.scalar(
+                select(ShadowRun).order_by(ShadowRun.created_at.desc()).limit(1)
+            )
+        if run is None:
+            return {
+                "enabled": self.settings.bilstm_shadow_enabled,
+                "run": None,
+                "metrics": None,
+                "integrity_error": None,
+            }
+        try:
+            metrics = self._shadow_run_metrics(run)
+            integrity_error = None
+        except PredictionDriftError as exc:
+            metrics = None
+            integrity_error = str(exc)
+        return {
+            "enabled": self.settings.bilstm_shadow_enabled,
+            "run": run,
+            "metrics": metrics,
+            "integrity_error": integrity_error,
+        }
+
+    def get_shadow_run(self, run_id: str) -> ShadowRun | None:
+        with self.database.session() as session:
+            return session.get(ShadowRun, run_id)
+
+    def shadow_result_file(self, run_id: str) -> Path:
+        run = self.get_shadow_run(run_id)
+        if run is None or not run.result_csv_path:
+            raise FileNotFoundError("找不到 BiLSTM 影子结果。")
+        self._shadow_run_metrics(run)
+        return Path(run.result_csv_path)
 
     def dashboard_data(self) -> dict[str, Any]:
         publication, snapshot, release = self._load_active_context()
@@ -790,6 +1080,7 @@ class PredictionService:
                 ),
             },
             "veto": veto,
+            "shadow": self.shadow_dashboard_data(),
             "jobs": jobs,
             "publications": publications,
         }
@@ -892,8 +1183,14 @@ class PredictionService:
 class RefreshManager:
     """Single-worker refresh queue so manual and scheduled jobs cannot overlap."""
 
-    def __init__(self, service: PredictionService) -> None:
+    def __init__(
+        self,
+        service: PredictionService,
+        *,
+        on_success: Callable[[VerifiedArtifact, str | None], None] | None = None,
+    ) -> None:
         self.service = service
+        self.on_success = on_success
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="prediction-refresh")
         self._lock = threading.Lock()
 
@@ -964,6 +1261,15 @@ class RefreshManager:
             status = "succeeded"
             message = "刷新完成并通过历史预测校验。"
             snapshot_id = artifact.snapshot_id
+            if self.on_success is not None:
+                try:
+                    self.on_success(artifact, actor)
+                except Exception as exc:  # Shadow scheduling must not revoke publication.
+                    self.service.record_audit(
+                        actor,
+                        "bilstm_shadow_schedule_failed",
+                        f"{type(exc).__name__}: {exc}",
+                    )
         with self.service.database.session() as session:
             job = session.get(RefreshJob, job_id)
             if job is not None:
@@ -982,6 +1288,39 @@ class RefreshManager:
     def get(self, job_id: str) -> RefreshJob | None:
         with self.service.database.session() as session:
             return session.get(RefreshJob, job_id)
+
+    def shutdown(self) -> None:
+        self._executor.shutdown(wait=False, cancel_futures=True)
+
+
+class ShadowManager:
+    """Run the expensive BiLSTM research engine away from public publication."""
+
+    def __init__(self, service: PredictionService) -> None:
+        self.service = service
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="bilstm-shadow")
+        self._lock = threading.Lock()
+
+    def submit(self, *, snapshot_id: str, actor: str | None, force: bool = False) -> tuple[str | None, bool]:
+        if not force and not self.service.settings.bilstm_shadow_enabled:
+            return None, False
+        with self._lock:
+            run, created = self.service.request_bilstm_shadow(snapshot_id, actor=actor)
+            if created:
+                self._executor.submit(self._run, run.id)
+            return run.id, created
+
+    def _run(self, run_id: str) -> None:
+        try:
+            self.service.run_bilstm_shadow(run_id)
+        except Exception as exc:  # A shadow failure must never affect public publication.
+            self.service.mark_bilstm_shadow_failed(
+                run_id,
+                f"{type(exc).__name__}: {exc}\n{traceback.format_exc(limit=8)}",
+            )
+
+    def get(self, run_id: str) -> ShadowRun | None:
+        return self.service.get_shadow_run(run_id)
 
     def shutdown(self) -> None:
         self._executor.shutdown(wait=False, cancel_futures=True)

@@ -8,10 +8,16 @@
     <p class="eyebrow">生产发布</p>
     <h1>运行概览</h1>
   </div>
-  <form method="post" action="/admin/refresh" class="refresh-form">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <button class="primary-button" type="submit">刷新数据与预测</button>
-  </form>
+  <div class="toolbar-actions">
+    <form method="post" action="/admin/refresh" class="refresh-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button class="primary-button" type="submit">刷新数据与预测</button>
+    </form>
+    <form method="post" action="/admin/shadow/bilstm" class="refresh-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button class="secondary-button" type="submit">运行 BiLSTM 影子预测</button>
+    </form>
+  </div>
 </div>
 
 {% if not service_ready %}
@@ -30,6 +36,12 @@
 <section class="job-banner job-{{ job.status }}" data-job-id="{{ job.id }}">
   <strong>刷新任务 {{ job.status }}</strong>
   <span>{{ job.message or '任务已进入队列。' }}</span>
+</section>
+{% endif %}
+{% if shadow_run %}
+<section class="job-banner job-{{ shadow_run.status }}" data-shadow-run-id="{{ shadow_run.id }}">
+  <strong>BiLSTM 影子任务 {{ shadow_run.status }}</strong>
+  <span>{{ shadow_run.message or '影子任务已进入队列。' }}</span>
 </section>
 {% endif %}
 
@@ -60,6 +72,26 @@
   <div class="forecast-item"><span>预测收盘价</span><strong>{{ '%.2f'|format(data.latest['预测次日收盘价']) }}</strong></div>
 </section>
 {% endif %}
+
+<section class="shadow-band" aria-labelledby="shadow-title">
+  <div>
+    <p class="eyebrow">非公开研究候选</p>
+    <h2 id="shadow-title">BiLSTM 影子运行</h2>
+  </div>
+  {% if data.shadow.run %}
+  <div class="shadow-item"><span>状态</span><strong><span class="tag {{ data.shadow.run.status }}">{{ data.shadow.run.status }}</span></strong></div>
+  <div class="shadow-item"><span>快照</span><strong class="mono">{{ data.shadow.run.snapshot_id[:8] }}</strong></div>
+  {% if data.shadow.metrics %}
+  <div class="shadow-item"><span>60 日方向胜率</span><strong>{{ data.shadow.metrics.accuracy|percent }}</strong></div>
+  <div class="shadow-item"><span>平衡准确率</span><strong>{{ data.shadow.metrics.balanced_accuracy|percent }}</strong></div>
+  <div class="shadow-item"><span>结果</span><strong><a href="/admin/shadow-runs/{{ data.shadow.run.id }}/results.csv">下载 CSV</a></strong></div>
+  {% else %}
+  <div class="shadow-item shadow-message"><span>运行信息</span><strong>{{ data.shadow.integrity_error or data.shadow.run.message or '等待完成' }}</strong></div>
+  {% endif %}
+  {% else %}
+  <div class="shadow-item shadow-message"><span>自动运行</span><strong>{{ '已启用' if data.shadow.enabled else '未启用，可手动运行' }}</strong></div>
+  {% endif %}
+</section>
 
 {% if data.veto %}
 <section class="veto-band" aria-labelledby="veto-title">
@@ -124,7 +156,7 @@
 </section>
 {% endif %}
 
-{% if job and job.status in ['queued', 'running'] %}
+{% if (job and job.status in ['queued', 'running']) or (shadow_run and shadow_run.status in ['queued', 'running']) %}
 <script>
   window.setTimeout(function () { window.location.reload(); }, 4000);
 </script>

@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import os
 import argparse
+from pathlib import Path
 
 import uvicorn
 
-from prediction_service.config import Settings
+from prediction_service.config import DEFAULT_CONFIG_PATH, Settings
 from prediction_service.service import PredictionService
 from prediction_service.web import create_app
 
@@ -19,9 +19,16 @@ if __name__ == "__main__":
         action="store_true",
         help="经历史预测完全一致校验后，创建新的模型发布版本。",
     )
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=DEFAULT_CONFIG_PATH,
+        help="服务配置文件路径，默认使用项目根目录的 config.ini。",
+    )
     arguments = parser.parse_args()
+    settings = Settings.from_config(arguments.config)
     if arguments.promote_compatible_release:
-        service = PredictionService(Settings.from_env())
+        service = PredictionService(settings)
         service.initialize(bootstrap=False)
         artifact = service.promote_compatible_release(actor="cli")
         if artifact is None:
@@ -32,8 +39,8 @@ if __name__ == "__main__":
         service.shutdown()
         raise SystemExit(0)
     uvicorn.run(
-        create_app(),
-        host=os.getenv("PREDICTION_SERVICE_HOST", "127.0.0.1"),
-        port=int(os.getenv("PREDICTION_SERVICE_PORT", "8000")),
+        create_app(settings),
+        host=settings.host,
+        port=settings.port,
         proxy_headers=True,
     )

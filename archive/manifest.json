@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "archived_on": "2026-09-17",
+  "purpose": "整理项目根目录中的历史预测输出与参考资料；文件内容未修改。",
+  "files": [
+    {
+      "original_path": "涨跌预测.csv",
+      "archived_path": "archive/legacy_results/涨跌预测.csv",
+      "sha256": "D7FC9F0F0C7134CC8C30B8A5DFFEA68DB11175F047ADE191A4085AAF50293370"
+    },
+    {
+      "original_path": "drp_feim_next_day_prediction.csv",
+      "archived_path": "archive/legacy_results/drp_feim_next_day_prediction.csv",
+      "sha256": "B9D9949A97456863852B4BF20C37CE3972F7225B10EF190DBBE4BE896B63A579"
+    },
+    {
+      "original_path": "drp_feim_prediction_results.csv",
+      "archived_path": "archive/legacy_results/drp_feim_prediction_results.csv",
+      "sha256": "DD920DE58869EAA5F1808C3FF9D6415727CD0D74625349384E36AFE3B26B6F31"
+    },
+    {
+      "original_path": "tushare_validation_prediction.csv",
+      "archived_path": "archive/legacy_results/tushare_validation_prediction.csv",
+      "sha256": "F2A52A1DBFDB70E6333CBCD41AEF102C9E43ACDECC2762652EB623998335BA03"
+    },
+    {
+      "original_path": "知网DRP+FEIM+2026-273-278.pdf",
+      "archived_path": "archive/reference/知网DRP+FEIM+2026-273-278.pdf",
+      "sha256": "2DD24B45B8CB75223518E213E90E5BAFA6913DF840E880BEAF66FD968DF81BD1"
+    },
+    {
+      "original_path": "指数预测.zip",
+      "archived_path": "archive/reference/指数预测.zip",
+      "sha256": "68CD969D3C55A5F2114E90EF74C50887E46AEA10C510821E5D9A1E8DFB4F5024"
+    }
+  ]
+}

@@ -4,7 +4,17 @@ __pycache__/
 .pytest_basetemp/
 service_data/
 .env
+config.ini
 artifacts/pytest_*/
 artifacts/pytest_*.log
 artifacts/service_tests_*/
 artifacts/prediction_service*.log
+artifacts/bilstm_*.log
+artifacts/bilstm_*/
+artifacts/shadow_*/
+artifacts/shadow_*.log
+artifacts/production_shadow_*/
+artifacts/production_shadow_*.log
+# 命令行本地结果；冻结基线和验收证据保留在 artifacts/baseline、evaluation、research。
+artifacts/run/
+artifacts/tmp/
