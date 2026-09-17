@@ -201,6 +201,7 @@ def run_validation_and_prediction(
     progress: bool = True,
     config: prediction_core.DirectionPredictionConfig | None = None,
     loop_overrides: Mapping[str, Any] | None = None,
+    diagnostics_output_path: str | Path | None = None,
 ) -> pd.DataFrame:
     """Return completed validation rows followed by exactly one live prediction.
 
@@ -227,6 +228,9 @@ def run_validation_and_prediction(
         periods=validation_days + 1,
         include_latest=True,
         output_path=None,
+        diagnostics_output_path=(
+            str(diagnostics_output_path) if diagnostics_output_path is not None else None
+        ),
         progress=progress,
         signal_engine=signal_engine,
     )

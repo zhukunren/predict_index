@@ -1,0 +1,132 @@
+{% extends "base.html" %}
+
+{% block title %}运行概览 | 上证指数预测{% endblock %}
+
+{% block content %}
+<div class="page-heading">
+  <div>
+    <p class="eyebrow">生产发布</p>
+    <h1>运行概览</h1>
+  </div>
+  <form method="post" action="/admin/refresh" class="refresh-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button class="primary-button" type="submit">刷新数据与预测</button>
+  </form>
+</div>
+
+{% if not service_ready %}
+<section class="empty-state">
+  <h2>尚无已发布快照</h2>
+  <p>请确认本地特征文件存在，或配置 Tushare token 后执行刷新。</p>
+</section>
+{% else %}
+{% if data.release_upgrade_required %}
+<section class="job-banner job-drift_detected">
+  <strong>检测到未发布的代码或参数版本</strong>
+  <span>公开结果将保持旧版本，需先执行兼容性校验并创建新发布版本。</span>
+</section>
+{% endif %}
+{% if job %}
+<section class="job-banner job-{{ job.status }}" data-job-id="{{ job.id }}">
+  <strong>刷新任务 {{ job.status }}</strong>
+  <span>{{ job.message or '任务已进入队列。' }}</span>
+</section>
+{% endif %}
+
+<section class="status-strip" aria-label="当前发布状态">
+  <div><span>行情截止</span><strong>{{ data.snapshot.data_as_of }}</strong></div>
+  <div><span>快照</span><strong class="mono">{{ data.snapshot.id[:8] }}</strong></div>
+  <div><span>模型版本</span><strong class="mono">{{ data.release.id[:8] }}</strong></div>
+  <div><span>已发布</span><strong>{{ data.publication.published_at.strftime('%Y-%m-%d %H:%M') }}</strong></div>
+</section>
+
+<section class="metrics-grid" aria-label="最近 60 日方向统计">
+  <article><span>方向胜率</span><strong>{{ data.metrics.accuracy|percent }}</strong><small>{{ data.metrics.rows }} 条已结算记录</small></article>
+  <article><span>平衡准确率</span><strong>{{ data.metrics.balanced_accuracy|percent }}</strong><small>上涨与下跌胜率均值</small></article>
+  <article><span>上涨信号</span><strong>{{ data.metrics.up_rows }}</strong><small>胜率 {{ data.metrics.up_accuracy|percent }}</small></article>
+  <article><span>下跌信号</span><strong>{{ data.metrics.down_rows }}</strong><small>胜率 {{ data.metrics.down_accuracy|percent }}</small></article>
+  <article><span>平均置信度</span><strong>{{ data.metrics.mean_confidence|percent }}</strong><small>仅循环验证记录</small></article>
+</section>
+
+{% if data.latest %}
+<section class="forecast-band" aria-labelledby="forecast-title">
+  <div>
+    <p class="eyebrow">下一交易日预测</p>
+    <h2 id="forecast-title">{{ data.latest['信号日期'] }}</h2>
+  </div>
+  <div class="forecast-item"><span>预测方向</span><strong class="direction {{ 'up' if data.latest['预测方向'] == '上涨' else 'down' }}">{{ data.latest['预测方向'] }}</strong></div>
+  <div class="forecast-item"><span>预测涨跌幅</span><strong>{{ '%+.4f%%'|format(data.latest['预测次日涨跌幅'] * 100) }}</strong></div>
+  <div class="forecast-item"><span>方向正确概率</span><strong>{{ data.latest['置信度']|percent }}</strong></div>
+  <div class="forecast-item"><span>预测收盘价</span><strong>{{ '%.2f'|format(data.latest['预测次日收盘价']) }}</strong></div>
+</section>
+{% endif %}
+
+{% if data.veto %}
+<section class="veto-band" aria-labelledby="veto-title">
+  <div>
+    <p class="eyebrow">State Veto 监控</p>
+    <h2 id="veto-title">低波动状态反转归因</h2>
+  </div>
+  <div class="veto-item"><span>全样本触发</span><strong>{{ data.veto.all.rows }} 次 / {{ data.veto.all.trigger_rate|percent }}</strong></div>
+  <div class="veto-item"><span>全样本准确率变化</span><strong>{{ data.veto.all.accuracy_lift|percent }}</strong></div>
+  <div class="veto-item"><span>近 20 日触发率</span><strong>{{ data.veto.recent_20.trigger_rate|percent }}</strong></div>
+  <div class="veto-item"><span>近 20 日方向收益增量</span><strong>{{ '%+.4f%%'|format(data.veto.recent_20.directional_return_lift * 100) if data.veto.recent_20.directional_return_lift is not none else '-' }}</strong></div>
+</section>
+{% endif %}
+
+<section class="table-section" aria-labelledby="result-title">
+  <div class="section-heading">
+    <div>
+      <p class="eyebrow">当前发布数据</p>
+      <h2 id="result-title">循环验证与预测结果</h2>
+    </div>
+    <a class="secondary-button" href="/api/v1/sh000001/latest.csv">下载 CSV</a>
+  </div>
+  <div class="table-scroll">
+    <table>
+      <thead>
+        <tr>
+          <th>类型</th><th>信号日期</th><th>方向</th><th>预测涨跌幅</th><th>预测收盘价</th><th>置信度</th><th>实际涨跌幅</th><th>正确</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in data.rows %}
+        <tr class="{{ 'pending-row' if row['结果类型'] == '次日预测' else '' }}">
+          <td><span class="tag {{ 'pending' if row['结果类型'] == '次日预测' else 'validated' }}">{{ row['结果类型'] }}</span></td>
+          <td class="mono">{{ row['信号日期'] }}</td>
+          <td class="direction {{ 'up' if row['预测方向'] == '上涨' else 'down' }}">{{ row['预测方向'] }}</td>
+          <td>{{ '%+.4f%%'|format(row['预测次日涨跌幅'] * 100) }}</td>
+          <td>{{ '%.2f'|format(row['预测次日收盘价']) }}</td>
+          <td>{{ row['置信度']|percent }}</td>
+          <td>{% if row['次日实际涨跌幅'] is not none %}{{ '%+.4f%%'|format(row['次日实际涨跌幅'] * 100) }}{% else %}-{% endif %}</td>
+          <td>{% if row['方向预测正确'] is sameas true %}<span class="status-good">是</span>{% elif row['方向预测正确'] is sameas false %}<span class="status-bad">否</span>{% else %}-{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="jobs-section" aria-labelledby="jobs-title">
+  <div class="section-heading"><div><p class="eyebrow">后台任务</p><h2 id="jobs-title">最近刷新</h2></div></div>
+  <div class="job-list">
+    {% for item in data.jobs %}
+    <div class="job-row">
+      <span class="tag {{ item.status }}">{{ item.status }}</span>
+      <span>{{ item.trigger }}</span>
+      <span class="mono">{{ item.id[:8] }}</span>
+      <span>{{ item.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</span>
+    </div>
+    {% else %}
+    <p class="muted">暂无刷新任务。</p>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+{% if job and job.status in ['queued', 'running'] %}
+<script>
+  window.setTimeout(function () { window.location.reload(); }, 4000);
+</script>
+{% endif %}
+{% endblock %}

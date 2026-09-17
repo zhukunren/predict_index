@@ -1,3 +1,10 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.pytest_basetemp/
+service_data/
+.env
+artifacts/pytest_*/
+artifacts/pytest_*.log
+artifacts/service_tests_*/
+artifacts/prediction_service*.log

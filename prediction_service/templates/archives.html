@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+
+{% block title %}快照归档 | 上证指数预测{% endblock %}
+
+{% block content %}
+<div class="page-heading">
+  <div><p class="eyebrow">可审计存档</p><h1>快照归档</h1></div>
+  <a class="secondary-button" href="/admin/">返回概览</a>
+</div>
+<section class="table-section">
+  <div class="table-scroll">
+    <table>
+      <thead><tr><th>发布时间</th><th>数据截止日</th><th>来源</th><th>快照</th><th>CSV</th><th>特征</th><th>清单</th></tr></thead>
+      <tbody>
+      {% for publication, snapshot in archives %}
+        <tr>
+          <td>{{ publication.published_at.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+          <td class="mono">{{ snapshot.data_as_of }}</td>
+          <td>{{ snapshot.source }}</td>
+          <td class="mono">{{ snapshot.id[:12] }}</td>
+          <td><a href="/admin/archives/{{ snapshot.id }}/results.csv">CSV</a></td>
+          <td><a href="/admin/archives/{{ snapshot.id }}/features.csv">特征</a></td>
+          <td><a href="/admin/archives/{{ snapshot.id }}/manifest.json">清单</a></td>
+        </tr>
+      {% else %}
+        <tr><td colspan="7" class="muted">暂无归档。</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

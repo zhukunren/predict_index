@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}上证指数预测服务{% endblock %}</title>
+  <link rel="stylesheet" href="/static/service.css">
+</head>
+<body>
+  <div class="app-shell">
+    {% if admin_username %}
+    <header class="topbar">
+      <a class="brand" href="/admin/">上证指数预测</a>
+      <nav aria-label="管理导航">
+        <a href="/admin/">运行概览</a>
+        <a href="/admin/archives">快照归档</a>
+        <a href="/api/v1/sh000001/latest.csv">公开 CSV</a>
+      </nav>
+      <div class="account">
+        <span>{{ admin_username }}</span>
+        <form method="post" action="/admin/logout">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button class="link-button" type="submit">退出</button>
+        </form>
+      </div>
+    </header>
+    {% endif %}
+    <main class="main-content {% block main_class %}{% endblock %}">
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+</body>
+</html>

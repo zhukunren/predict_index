@@ -133,7 +133,7 @@ SCRIPT_ENCODING = "utf-8-sig"
 # 循环验证的日期范围。start/end 都为 None 时，验证最近 SCRIPT_PERIODS 个可验证交易日。
 SCRIPT_START_DATE: str | None = None
 SCRIPT_END_DATE: str | None = None
-SCRIPT_PERIODS = 60  # 回测周期
+SCRIPT_PERIODS = 20  # 回测周期
 
 SCRIPT_EPOCHS = 10
 SCRIPT_LOOKBACK = 30
@@ -3510,6 +3510,8 @@ def _state_veto_rule_signal(
                 "rule_mode": "state_veto_rule",
                 "veto_applied": 0,
                 "veto_reason": "",
+                "base_predicted_label": int(base_signal.predicted_label),
+                "base_predicted_return": float(base_signal.predicted_return),
             },
         )
 
@@ -3535,6 +3537,8 @@ def _state_veto_rule_signal(
             "veto_state_rows": int(state_rows),
             "base_calibration_accuracy": base_signal.calibration_accuracy,
             "base_calibration_rows": base_signal.calibration_rows,
+            "base_predicted_label": int(base_signal.predicted_label),
+            "base_predicted_return": float(base_signal.predicted_return),
         },
     )
 

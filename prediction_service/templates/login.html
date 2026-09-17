@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+
+{% block title %}管理员登录 | 上证指数预测{% endblock %}
+{% block main_class %}login-main{% endblock %}
+
+{% block content %}
+<section class="login-panel" aria-labelledby="login-title">
+  <div class="login-brand">上证指数预测</div>
+  <h1 id="login-title">管理员登录</h1>
+  {% if setup_required %}
+  <p class="notice error">服务尚未设置管理员密码。请配置 <code>PREDICTION_SERVICE_ADMIN_PASSWORD</code> 后重启服务。</p>
+  {% endif %}
+  {% if error %}
+  <p class="notice error">{{ error }}</p>
+  {% endif %}
+  <form method="post" action="/admin/login" class="login-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label for="username">账号</label>
+    <input id="username" name="username" autocomplete="username" required autofocus>
+    <label for="password">密码</label>
+    <input id="password" name="password" type="password" autocomplete="current-password" required>
+    <button class="primary-button" type="submit" {% if setup_required %}disabled{% endif %}>登录</button>
+  </form>
+</section>
+{% endblock %}

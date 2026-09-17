@@ -9,6 +9,7 @@ import pytest
 
 import 循环验证脚本 as core
 import 预测脚本 as predictor
+import return_calibration
 from return_calibration import calibrate_returns
 
 
@@ -201,6 +202,32 @@ def test_return_calibration_does_not_read_current_or_future_outcomes():
         "return_calibration_rows",
     ]
     pd.testing.assert_frame_equal(original.loc[:3, columns], altered.loc[:3, columns])
+
+
+def test_return_calibration_clamps_weighted_median_index(monkeypatch):
+    frame = _return_frame()
+    original_searchsorted = return_calibration.np.searchsorted
+
+    def oversized_index(*args, **kwargs):
+        return len(args[0])
+
+    monkeypatch.setattr(return_calibration.np, "searchsorted", oversized_index)
+    calibrated = calibrate_returns(frame, window=3, min_rows=2)
+
+    monkeypatch.setattr(return_calibration.np, "searchsorted", original_searchsorted)
+    assert calibrated.loc[3, "return_calibration_scale"] == pytest.approx(0.5)
+
+
+def test_return_calibration_preserves_finite_close_for_negative_one_return():
+    frame = _return_frame()
+    frame.loc[3, "predicted_pct_change"] = -1.0
+    frame.loc[3, "predicted_close"] = 0.0
+
+    calibrated = calibrate_returns(frame, window=3, min_rows=2)
+
+    assert calibrated.loc[3, "return_calibration_close_fallback"] == 1
+    assert calibrated.loc[3, "predicted_close"] == pytest.approx(0.0)
+    assert np.isfinite(calibrated["predicted_close"]).all()
 
 
 def test_zero_calibrated_return_keeps_explicit_up_direction():
