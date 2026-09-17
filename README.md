@@ -29,6 +29,15 @@ python 预测脚本.py --output artifacts/run/next_day_prediction.csv
 python 循环验证脚本.py --mode loop_validate --periods 252 --output artifacts/run/validation.csv
 ```
 
+一次完成 Tushare 拉取、循环验证和最新次日预测，并只输出一份合并结果 CSV：
+
+```powershell
+$env:TUSHARE_TOKEN = "你的 Tushare token"
+python tushare_prediction_pipeline.py --validation-days 252 --output artifacts/run/tushare_validation_prediction.csv
+```
+
+其中 `--validation-days` 控制 CSV 中的已完成循环验证交易日数。结果首列 `结果类型` 会标记前面的历史行是 `循环验证`，最后一行是 `次日预测`；该行的实际涨跌幅和正确性会留空。默认不保存中间行情文件；传入 `--save-market-data` 可保存到 `market_data`，之后可加 `--skip-fetch` 直接复算。
+
 采集数据可使用 `data_akshare.py`、`数据拉取脚本_tushare.py` 或 `数据拉取脚本_wind.py`。三者都生成 `market_data/merged_features.csv`；预测默认优先读取该文件。
 
 ## 非回退验收

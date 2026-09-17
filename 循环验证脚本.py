@@ -133,7 +133,7 @@ SCRIPT_ENCODING = "utf-8-sig"
 # 循环验证的日期范围。start/end 都为 None 时，验证最近 SCRIPT_PERIODS 个可验证交易日。
 SCRIPT_START_DATE: str | None = None
 SCRIPT_END_DATE: str | None = None
-SCRIPT_PERIODS = 20  # 回测周期
+SCRIPT_PERIODS = 60  # 回测周期
 
 SCRIPT_EPOCHS = 10
 SCRIPT_LOOKBACK = 30
