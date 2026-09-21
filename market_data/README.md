@@ -1,0 +1,11 @@
+# 行情输入约定
+
+`market_data/` 保存可复现的模型输入，当前标准文件为：
+
+- `000001_sh.csv`：上证指数日线原始行情；
+- `hangseng.csv`：恒生指数日线原始行情；
+- `merged_features.csv`：合并后的预测特征表。
+
+`python -m scripts.fetch_tushare`、`python -m scripts.fetch_wind` 和 `python -m scripts.fetch_akshare` 可生成这些文件。循环验证、次日预测、冻结基线和服务首次启动默认读取 `merged_features.csv`。
+
+不要把预测 CSV、临时诊断或服务归档写入本目录。服务模式下，历史交易日数据只允许追加，不允许修订；供应商修订历史行情会被不可变账本校验拒绝。

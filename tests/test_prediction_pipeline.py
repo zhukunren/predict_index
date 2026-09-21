@@ -8,7 +8,8 @@ import pandas as pd
 import pytest
 
 import 循环验证脚本 as core
-import 预测脚本 as predictor
+from scripts import predict as predictor
+import return_calibration
 from return_calibration import calibrate_returns
 
 
@@ -39,6 +40,24 @@ def _config() -> core.DirectionPredictionConfig:
         min_train_sequences=20,
         external_feature_mode="none",
         drop_zero_volume=True,
+    )
+
+
+def _bilstm_causal_config() -> core.DirectionPredictionConfig:
+    return core.DirectionPredictionConfig(
+        lookback=5,
+        neutral_band=0.0,
+        min_train_sequences=20,
+        hidden_size=4,
+        dense_size=4,
+        dropout=0.0,
+        epochs=1,
+        batch_size=16,
+        patience=1,
+        device="cpu",
+        external_feature_mode="none",
+        drop_zero_volume=True,
+        use_timeseries_cv=False,
     )
 
 
@@ -155,6 +174,51 @@ def test_future_market_changes_cannot_rewrite_prior_predictions():
     )
 
 
+def test_bilstm_live_prediction_matches_causal_replay_and_ignores_future_rows():
+    data = _market_frame(90)
+    cutoff = 61
+    config = _bilstm_causal_config()
+    options = _options()
+    options.update(
+        signal_engine="bilstm_causal",
+        bilstm_refit_interval=5,
+        recent_failure_guard=False,
+        confidence_calibration_window=None,
+        return_calibration_window=0,
+    )
+    live = core.predict_next_day(data.iloc[: cutoff + 1], config=config, **options)
+    replay = core.loop_validate_prediction_results(
+        data,
+        config=config,
+        start_date=data["trade_date"].iloc[cutoff],
+        end_date=data["trade_date"].iloc[cutoff],
+        **options,
+    )
+    changed = data.copy()
+    changed.loc[changed.index > cutoff, ["open", "high", "low", "close", "pre_close"]] *= 1.7
+    changed.loc[changed.index > cutoff, ["vol", "amount"]] *= 2.0
+    replay_with_future_changed = core.loop_validate_prediction_results(
+        changed,
+        config=config,
+        start_date=data["trade_date"].iloc[cutoff],
+        end_date=data["trade_date"].iloc[cutoff],
+        **options,
+    )
+
+    row = replay.iloc[0]
+    assert live["predicted_label"] == row["predicted_label"]
+    assert live["estimated_next_return"] == pytest.approx(
+        row["predicted_pct_change"], abs=1e-12
+    )
+    assert live["estimated_next_close"] == pytest.approx(row["predicted_close"])
+    assert live["raw_confidence"] == pytest.approx(row["confidence"])
+    assert live["calibrated_confidence"] == pytest.approx(row["confidence"])
+    pd.testing.assert_frame_equal(
+        replay.loc[:, ["predicted_label", "predicted_pct_change", "predicted_close", "confidence"]],
+        replay_with_future_changed.loc[:, ["predicted_label", "predicted_pct_change", "predicted_close", "confidence"]],
+    )
+
+
 def _return_frame() -> pd.DataFrame:
     predicted = np.asarray([0.01, 0.01, 0.08, 0.04, -0.02])
     return pd.DataFrame(
@@ -201,6 +265,32 @@ def test_return_calibration_does_not_read_current_or_future_outcomes():
         "return_calibration_rows",
     ]
     pd.testing.assert_frame_equal(original.loc[:3, columns], altered.loc[:3, columns])
+
+
+def test_return_calibration_clamps_weighted_median_index(monkeypatch):
+    frame = _return_frame()
+    original_searchsorted = return_calibration.np.searchsorted
+
+    def oversized_index(*args, **kwargs):
+        return len(args[0])
+
+    monkeypatch.setattr(return_calibration.np, "searchsorted", oversized_index)
+    calibrated = calibrate_returns(frame, window=3, min_rows=2)
+
+    monkeypatch.setattr(return_calibration.np, "searchsorted", original_searchsorted)
+    assert calibrated.loc[3, "return_calibration_scale"] == pytest.approx(0.5)
+
+
+def test_return_calibration_preserves_finite_close_for_negative_one_return():
+    frame = _return_frame()
+    frame.loc[3, "predicted_pct_change"] = -1.0
+    frame.loc[3, "predicted_close"] = 0.0
+
+    calibrated = calibrate_returns(frame, window=3, min_rows=2)
+
+    assert calibrated.loc[3, "return_calibration_close_fallback"] == 1
+    assert calibrated.loc[3, "predicted_close"] == pytest.approx(0.0)
+    assert np.isfinite(calibrated["predicted_close"]).all()
 
 
 def test_zero_calibrated_return_keeps_explicit_up_direction():

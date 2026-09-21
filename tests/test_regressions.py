@@ -15,8 +15,8 @@ import 循环验证脚本 as core
 ROOT = Path(__file__).resolve().parents[1]
 DATA_MODULES = (
     ("tushare_data", "数据拉取脚本_tushare.py", "tushare"),
-    ("akshare_data", "data_akshare.py", "akshare"),
-    ("wind_data", "数据拉取脚本_wind.py", "WindPy"),
+    ("akshare_data", "scripts/fetch_akshare.py", "akshare"),
+    ("wind_data", "scripts/fetch_wind.py", "WindPy"),
 )
 
 
@@ -346,7 +346,7 @@ def test_confidence_tracks_direction_reversals():
 
 
 def test_prediction_script_writes_shared_csv_schema(tmp_path: Path):
-    from 预测脚本 import save_prediction_csv
+    from scripts.predict import save_prediction_csv
 
     output_path = tmp_path / "next_day_prediction.csv"
     result = {

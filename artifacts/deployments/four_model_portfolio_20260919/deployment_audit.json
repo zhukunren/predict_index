@@ -1,0 +1,91 @@
+{
+  "status": "deployed",
+  "active_publication": {
+    "id": "9667998f-4415-42a3-b373-3c44358d40cb",
+    "snapshot_id": "b3d33265-0ca3-4488-9817-34942aecba2e",
+    "release_id": "96b8e827b1426666a0d11fdcb7b92bd88f25a62c906e3087ba622837616d4489",
+    "public_csv_path": "C:\\Users\\11705\\Desktop\\指数涨跌预测\\service_data\\archives\\2026\\09\\18\\b3d33265-0ca3-4488-9817-34942aecba2e\\results.csv",
+    "public_csv_sha256": "ce57a75eea2bd8431278625fb1e8ab0d372ea8065f4700335c3df8f95ce5f6f2",
+    "row_count": 61,
+    "is_active": 1,
+    "published_at": "2026-09-19 03:07:05.832113"
+  },
+  "models": {
+    "baseline": {
+      "name": "原生产基线",
+      "release_id": "7b18bb7acd4ece38cf0e02ab87198130f7bfb6029e23e7297d232d82b1f03384",
+      "results_file": "baseline_results.csv",
+      "role": "shadow"
+    },
+    "moneyflow": {
+      "name": "资金流信号",
+      "release_id": "4413140f8ff3b0d568504476d680670fdc9487dcc89508d96dd9a6d90483c989",
+      "results_file": "moneyflow_results.csv",
+      "role": "shadow"
+    },
+    "moneyflow_price": {
+      "name": "资金流＋价格特征组合",
+      "release_id": "285980e76b7ddf308b17f0e86a682c249d0884e3625a2db60f0bf8a89347be00",
+      "results_file": "moneyflow_price_results.csv",
+      "role": "shadow"
+    },
+    "option_moneyflow": {
+      "name": "期权＋资金流组合",
+      "release_id": "96b8e827b1426666a0d11fdcb7b92bd88f25a62c906e3087ba622837616d4489",
+      "results_file": "option_moneyflow_results.csv",
+      "role": "production"
+    }
+  },
+  "preserved_historical_rows": {
+    "prediction_ledger": 1891,
+    "outcome_resolutions": 1882
+  },
+  "baseline_original_overlap": 64,
+  "baseline_original_exact": true,
+  "rehearsal_recomputed_all_models": true,
+  "production_equals_rehearsal_replays": {
+    "baseline": true,
+    "moneyflow": true,
+    "moneyflow_price": true,
+    "option_moneyflow": true
+  },
+  "health": {
+    "status": "ok",
+    "csv_available": true,
+    "data_as_of": "20260918",
+    "expected_as_of": "20260918",
+    "snapshot_id": "b3d33265-0ca3-4488-9817-34942aecba2e",
+    "message": "发布数据已更新"
+  },
+  "schedule_shanghai": "20:15",
+  "historical_research_gate_passed": false,
+  "activation_basis": "explicit_user_selection",
+  "backup_directory": "C:\\Users\\11705\\Desktop\\指数涨跌预测\\service_data\\backups\\before_four_models_20260919",
+  "browser_acceptance": {
+    "desktop": "layout and chart passed",
+    "mobile": "layout and chart passed",
+    "small-mobile": "layout and chart passed",
+    "custom_days": 17,
+    "comparison_export_rows": 17,
+    "production_release": "96b8e827b1426666a0d11fdcb7b92bd88f25a62c906e3087ba622837616d4489",
+    "csv_rows": 61,
+    "csv_sha256": "ce57a75eea2bd8431278625fb1e8ab0d372ea8065f4700335c3df8f95ce5f6f2",
+    "shared_dates": 60,
+    "models": 4,
+    "prospective_empty": true,
+    "page_errors": []
+  },
+  "checks": {
+    "atomic_publication": true,
+    "immutable_old_ledger": true,
+    "all_four_models_same_snapshot": true,
+    "public_csv_60_plus_1": true,
+    "no_automatic_research_gate_override": true
+  },
+  "automated_tests": {
+    "tests": 98,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  }
+}

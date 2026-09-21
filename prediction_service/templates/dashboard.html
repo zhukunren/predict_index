@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}{{ {'overview':'预测概览','history':'历史明细','jobs':'运行任务','research':'研究对照'}[view] }} | 上证指数{% endblock %}
+{% block content %}
+<header class="page-heading">
+  <div><div class="breadcrumb">市场预测 <span>/</span> {{ {'overview':'运行概览','history':'历史明细','jobs':'运行任务','research':'研究对照'}[view] }}</div><h1>{{ '上证指数' if view == 'overview' else {'history':'历史明细','jobs':'运行任务','research':'研究对照'}[view] }} <span class="symbol">SH000001</span></h1></div>
+  <div class="toolbar-actions">
+    <a class="button secondary" href="/api/v1/sh000001/latest.csv"><i data-lucide="download"></i>下载 CSV</a>
+    <form method="post" action="/admin/refresh" data-submit-job><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button primary" {% if active_jobs %}disabled{% endif %}><i data-lucide="refresh-cw"></i>{{ '刷新中' if active_jobs else '刷新预测' }}</button></form>
+  </div>
+</header>
+{% if error %}<div class="notice error" role="alert"><i data-lucide="circle-alert"></i><span>{{ error }}</span></div>{% endif %}
+{% if data %}
+{% if data.portfolio_enabled %}<div class="active-model-line"><span class="badge production">正式生产</span><strong>{{ data.model_name }}</strong><a class="text-button" href="/admin/models?days={{ days }}">与 3 个影子模型对比<i data-lucide="arrow-right"></i></a></div>{% endif %}
+<div class="publication-line"><span class="status-dot {{ data.health.status }}"></span><span>{{ data.health.message }}</span><span class="line-divider"></span><span>行情 {{ data.snapshot.data_as_of|date }}</span><span>发布 {{ data.publication.published_at|localtime }} <small>上海时间</small></span><a href="/admin/archives" class="publication-id" title="当前发布快照">{{ data.snapshot.id[:8] }}<i data-lucide="arrow-up-right"></i></a></div>
+{% if data.release_upgrade_required %}<div class="notice warning"><i data-lucide="git-branch"></i><span>新代码待校验，当前 CSV 继续使用已发布版本。</span>{% if not data.portfolio_enabled %}<form method="post" action="/admin/promote" data-submit-job><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="text-button">校验并发布<i data-lucide="arrow-right"></i></button></form>{% endif %}</div>{% endif %}
+{% endif %}
+{% if view in ['overview', 'history'] %}
+{% if data and view == 'overview' and data.latest %}
+{% set latest = data.latest %}
+<section class="forecast {{ 'up' if latest['预测方向'] == '上涨' else 'down' }}" aria-labelledby="forecast-title">
+  <div class="forecast-heading"><div class="section-kicker">下一交易日预测 <span class="badge neutral">待结算</span></div><h2 id="forecast-title">{{ latest.get('预测目标交易日')|date }}</h2><div class="subtle">信号日 {{ latest['信号日期']|date }}</div></div>
+  <div class="forecast-value"><span>预测方向</span><strong class="direction {{ 'up' if latest['预测方向'] == '上涨' else 'down' }}"><i data-lucide="{{ 'trending-up' if latest['预测方向'] == '上涨' else 'trending-down' }}"></i>{{ latest['预测方向'] }}</strong></div>
+  <div class="forecast-value"><span>预测涨跌幅</span><strong class="numeric direction {{ 'up' if latest['预测方向'] == '上涨' else 'down' }}">{{ latest['预测次日涨跌幅']|signed_percent }}</strong></div>
+  <div class="forecast-value"><span>预测收盘点位</span><strong class="numeric">{{ latest['预测次日收盘价']|price }}<small>点</small></strong></div>
+  <div class="forecast-value"><span>方向正确概率</span><strong class="numeric">{{ latest['置信度']|percent }}</strong><div class="confidence-track"><span style="width: {{ (latest['置信度'] * 100)|round(1) }}%"></span></div></div>
+</section>
+{% endif %}
+<section class="statistics-section" aria-labelledby="statistics-title">
+  <div class="section-heading window-heading"><div><h2 id="statistics-title">{{ '预测表现' if view == 'overview' else '历史统计' }}</h2>{% if data %}<p class="subtle">{{ data.metrics.start_date|date }} 至 {{ data.metrics.end_date|date }} · {{ data.metrics.rows }} 个已结算交易日{% if data.metrics.rows < days %} <span class="sample-note">/ 请求 {{ days }} 日，可用 {{ data.metrics.available_rows }} 日</span>{% endif %}</p>{% endif %}</div>
+    <form class="window-control" method="get" action="/admin/" aria-label="统计窗口"><input type="hidden" name="view" value="{{ view }}"><span class="control-label">统计窗口</span><div class="segmented" role="group" aria-label="快捷统计天数">{% for preset in [5,20,60] %}<a href="/admin/?view={{ view }}&days={{ preset }}" class="{{ 'selected' if days == preset else '' }}" {% if days == preset %}aria-current="true"{% endif %}>{{ preset }} 日</a>{% endfor %}</div><label class="custom-window"><span class="sr-only">自定义统计交易日数</span><input id="custom-days" name="days" type="number" min="1" max="5000" step="1" value="{{ days }}" aria-label="自定义统计交易日数"><span>日</span></label><button type="submit" class="icon-button apply-days" title="应用统计天数" aria-label="应用统计天数"><i data-lucide="arrow-right"></i></button></form>
+  </div>
+{% if data %}
+  <div class="metrics-strip">
+    <div class="metric"><span>方向准确率</span><strong>{{ data.metrics.accuracy|percent }}</strong><small>{{ data.metrics.correct_rows }} / {{ data.metrics.rows }} 次命中</small></div>
+    <div class="metric"><span>平衡准确率 <i data-lucide="info" class="info" title="实际上涨、实际下跌两类召回率的均值；单类样本时不显示。"></i></span><strong>{{ data.metrics.balanced_accuracy|percent }}</strong><small>实际上涨 {{ data.metrics.actual_up_rows }} · 下跌 {{ data.metrics.rows - data.metrics.actual_up_rows }}</small></div>
+    <div class="metric"><span>平均置信度</span><strong>{{ data.metrics.mean_confidence|percent }}</strong><small>始终预测上涨基准 {{ data.metrics.baseline_accuracy|percent }}</small></div>
+    <div class="metric"><span>涨跌幅 MAE <i data-lucide="info" class="info" title="预测涨跌幅与实际涨跌幅的平均绝对误差。"></i></span><strong>{{ data.metrics.mae|percent }}</strong><small>事前预测 {{ data.metrics.live_rows }} · 历史回放 {{ data.metrics.rows - data.metrics.live_rows }}</small></div>
+  </div>
+{% if view == 'overview' %}
+  <div class="analytics-grid">
+    <section class="chart-section"><div class="section-heading"><h3>预测与实际涨跌幅</h3><div class="chart-legend"><span><b class="legend-line predicted"></b>预测</span><span><b class="legend-line actual"></b>实际</span></div></div><div class="chart-area"><canvas id="returns-chart" role="img" aria-label="所选交易日预测与实际涨跌幅折线图"></canvas></div></section>
+    <section class="hit-section"><div class="section-heading"><h3>方向命中分布</h3><span class="subtle">最近 {{ [data.metrics.rows,60]|min }} 条</span></div><div class="hit-grid">{% for row in data.metrics.records[-60:] %}<span class="hit-tile {{ 'hit' if row.hit else 'miss' }}" title="{{ row['预测目标交易日']|date }} · {{ '正确' if row.hit else '错误' }}" aria-label="{{ row['预测目标交易日']|date }} {{ '正确' if row.hit else '错误' }}">{{ loop.index }}</span>{% endfor %}</div><div class="hit-legend"><span><b class="hit-key"></b>正确</span><span><b class="miss-key"></b>错误</span></div><div class="signal-rates"><div><span class="direction up">上涨信号</span><strong>{{ data.metrics.up_accuracy|percent }}</strong><small>{{ data.metrics.up_rows }} 次</small></div><div><span class="direction down">下跌信号</span><strong>{{ data.metrics.down_accuracy|percent }}</strong><small>{{ data.metrics.down_rows }} 次</small></div></div></section>
+  </div>
+  <script id="chart-data" type="application/json">{{ data.metrics.records|tojson }}</script>
+{% endif %}
+{% endif %}
+</section>
+{% if data %}
+<section class="results-section" aria-labelledby="results-title" data-results-table>
+  <div class="section-heading"><div><h2 id="results-title">{{ '近期预测记录' if view == 'overview' else '预测明细' }}</h2></div><div class="table-tools">{% if view == 'overview' %}<a class="text-button" href="/admin/?view=history&days={{ days }}">查看全部 {{ data.metrics.rows }} 条<i data-lucide="arrow-right"></i></a>{% else %}<label><span class="sr-only">预测方向筛选</span><select data-direction-filter><option value="">全部方向</option><option value="上涨">上涨</option><option value="下跌">下跌</option></select></label><label><span class="sr-only">结果筛选</span><select data-outcome-filter><option value="">全部结果</option><option value="hit">正确</option><option value="miss">错误</option></select></label>{% endif %}</div></div>
+  <div class="table-scroll"><table><thead><tr><th>目标交易日</th><th>信号日</th><th>预测方向</th><th class="right">预测涨跌幅</th><th class="right">实际涨跌幅</th><th class="right">置信度</th><th>结果</th><th>来源</th></tr></thead><tbody>
+  {% for row in data.rows[:8] if view == 'overview' %}{% include "result_row.html" %}{% endfor %}
+  {% if view == 'history' %}{% for row in data.rows %}{% include "result_row.html" %}{% endfor %}{% endif %}
+  </tbody></table><div class="table-empty" data-no-results hidden>没有符合条件的记录</div></div>
+  {% if view == 'history' %}<div class="pagination" data-pagination hidden><span data-result-count></span><div><button class="icon-button" data-prev title="上一页" aria-label="上一页"><i data-lucide="chevron-left"></i></button><span data-page></span><button class="icon-button" data-next title="下一页" aria-label="下一页"><i data-lucide="chevron-right"></i></button></div></div>{% endif %}
+</section>
+{% else %}<section class="empty-state"><i data-lucide="database"></i><h2>暂无可用预测</h2><p>等待首个有效发布。</p></section>{% endif %}
+{% endif %}
+{% if view == 'jobs' %}
+<div class="operations-strip"><div><span>定时刷新</span><strong>{{ '已启用' if scheduled else '未启用' }}</strong></div><div><span>每日计划 · 上海时间</span><strong>{{ data.schedule_time if data else '-' }}</strong></div><div><span>数据接口</span><strong>{{ '可读取' if data else '不可用' }}</strong></div><div><span>运行中任务</span><strong>{{ active_jobs|length }}</strong></div></div>
+<section><div class="section-heading"><h2>最近刷新任务</h2><span class="subtle">最近 20 次</span></div><div class="job-list">{% for item in jobs %}<article class="job-row"><div class="job-summary"><span class="job-symbol {{ item.status }}"><i data-lucide="{{ 'circle-check' if item.status == 'succeeded' else 'loader-circle' if item.status in ['queued','running'] else 'circle-alert' }}"></i></span><div><strong>{{ '自动刷新' if item.trigger.startswith('scheduled') else '版本校验' if item.trigger == 'promotion' else '手动刷新' }}</strong><small>{{ item.created_at|localtime }} · {{ item.id[:8] }}</small></div><span class="badge {{ item.status }}">{{ item.status|job_label }}</span></div><p>{{ (item.message or '任务正在处理').split('\n')[0] }}</p>{% if item.status == 'running' %}<small class="subtle">最近心跳 {{ item.heartbeat_at|localtime }}</small>{% endif %}{% if item.message and '\n' in item.message %}<details><summary>诊断详情</summary><pre>{{ item.message }}</pre></details>{% endif %}</article>{% else %}<div class="empty-state">暂无刷新任务</div>{% endfor %}</div></section>
+{% endif %}
+{% if view == 'research' and data %}
+<section class="research-section"><div class="section-heading"><div><h2>BiLSTM 影子运行</h2><p class="subtle">独立研究记录 · {{ '自动运行已启用' if data.shadow.enabled else '手动运行' }}</p></div><form method="post" action="/admin/shadow/bilstm" data-submit-job><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button secondary" {% if data.shadow.run and data.shadow.run.status in ['queued','running'] %}disabled{% endif %}><i data-lucide="play"></i>运行影子预测</button></form></div>
+{% if data.shadow.run %}<div class="publication-line"><span class="badge {{ data.shadow.run.status }}">{{ data.shadow.run.status|job_label }}</span><span>快照 {{ data.shadow.run.snapshot_id[:8] }}</span><span>{{ data.shadow.run.created_at|localtime }}</span></div>{% if data.shadow.metrics %}<div class="metrics-strip"><div class="metric"><span>方向准确率</span><strong>{{ data.shadow.metrics.accuracy|percent }}</strong><small>{{ data.shadow.metrics.rows }} 个已结算交易日</small></div><div class="metric"><span>平衡准确率</span><strong>{{ data.shadow.metrics.balanced_accuracy|percent }}</strong></div><div class="metric"><span>平均置信度</span><strong>{{ data.shadow.metrics.mean_confidence|percent }}</strong></div><div class="metric"><span>归档结果</span><a class="button secondary" href="/admin/shadow-runs/{{ data.shadow.run.id }}/results.csv"><i data-lucide="download"></i>影子 CSV</a></div></div>{% else %}<p class="notice warning">{{ data.shadow.integrity_error or data.shadow.run.message or '任务等待完成' }}</p>{% endif %}{% else %}<div class="empty-state">暂无影子运行记录</div>{% endif %}
+</section>
+{% if data.veto %}<section class="research-section"><div class="section-heading"><h2>低波动状态反转归因</h2><span class="subtle">已结算样本</span></div><div class="metrics-strip"><div class="metric"><span>反转触发</span><strong>{{ data.veto.all.rows }}</strong><small>触发率 {{ data.veto.all.trigger_rate|percent }}</small></div><div class="metric"><span>触发日准确率提升</span><strong>{{ data.veto.all.accuracy_lift|signed_percent }}</strong></div><div class="metric"><span>近 20 日触发率</span><strong>{{ data.veto.recent_20.trigger_rate|percent }}</strong></div><div class="metric"><span>近 20 日方向收益增量</span><strong>{{ data.veto.recent_20.directional_return_lift|signed_percent }}</strong></div></div></section>{% endif %}
+{% endif %}
+<footer class="workspace-footer"><span>SH000001 · {{ data.release.algorithm_id if data else '预测服务' }}</span><div><a href="/api/v1/sh000001/status">API 状态<i data-lucide="arrow-up-right"></i></a><button class="text-button" data-copy-api title="复制公开 CSV 地址"><i data-lucide="copy"></i>复制 API 地址</button></div></footer>
+<script id="job-state" type="application/json">{{ {'jobs':active_jobs, 'shadow':shadow_run.id if shadow_run and shadow_run.status in ['queued','running'] else (data.shadow.run.id if data and view == 'research' and data.shadow.run and data.shadow.run.status in ['queued','running'] else none)}|tojson }}</script>
+{% endblock %}

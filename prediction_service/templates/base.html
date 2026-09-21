@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>{% block title %}上证指数预测{% endblock %}</title>
+  <link rel="stylesheet" href="/static/service.css?v=3">
+  <script defer src="/static/vendor/lucide.min.js"></script>
+  <script defer src="/static/vendor/chart.umd.js"></script>
+  <script defer src="/static/service.js?v=3"></script>
+</head>
+<body class="{{ 'authenticated' if admin_username else 'guest' }}">
+  {% if admin_username %}
+  <aside class="sidebar">
+    <a class="brand" href="/admin/"><span class="brand-mark"><i data-lucide="chart-no-axes-combined"></i></span><span>指数观察<small>SHANGHAI INDEX</small></span></a>
+    <form class="mobile-account" method="post" action="/admin/logout"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="icon-button" title="退出登录" aria-label="退出登录"><i data-lucide="log-out"></i></button></form>
+    <div class="nav-label">工作台</div>
+    <nav aria-label="管理导航">
+      <a href="/admin/?view=overview" class="{{ 'active' if view|default('') == 'overview' else '' }}"><i data-lucide="layout-dashboard"></i>预测概览</a>
+      <a href="/admin/models" class="{{ 'active' if view|default('') == 'models' else '' }}"><i data-lucide="git-compare-arrows"></i>模型对比</a>
+      <a href="/admin/?view=history" class="{{ 'active' if view|default('') == 'history' else '' }}"><i data-lucide="table-2"></i>历史明细</a>
+      <a href="/admin/?view=jobs" class="{{ 'active' if view|default('') == 'jobs' else '' }}"><i data-lucide="activity"></i>运行任务</a>
+      <a href="/admin/archives" class="{{ 'active' if request.url.path == '/admin/archives' else '' }}"><i data-lucide="archive"></i>快照归档</a>
+      <a href="/admin/?view=research" class="{{ 'active' if view|default('') == 'research' else '' }}"><i data-lucide="flask-conical"></i>研究对照</a>
+    </nav>
+    <div class="sidebar-bottom">
+      <a class="api-link" href="/api/v1/sh000001/latest.csv"><i data-lucide="file-down"></i><span>公开 CSV<small>SH000001 · latest</small></span><i data-lucide="arrow-up-right"></i></a>
+      <div class="account"><span class="avatar"><i data-lucide="user-round"></i></span><span>{{ admin_username }}<small>管理员</small></span><form method="post" action="/admin/logout"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="icon-button" title="退出登录" aria-label="退出登录"><i data-lucide="log-out"></i></button></form></div>
+    </div>
+  </aside>
+  {% endif %}
+  <main class="main-content {% block main_class %}{% endblock %}">
+    {% block content %}{% endblock %}
+  </main>
+  <div id="toast" class="toast" role="status" hidden></div>
+</body>
+</html>

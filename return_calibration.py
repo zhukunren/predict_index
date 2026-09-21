@@ -31,12 +31,31 @@ def calibrate_returns(frame: pd.DataFrame, *, window: int = 252, min_rows: int =
         ratios = y[valid] / x[valid]
         weights = np.abs(x[valid])
         order = np.argsort(ratios, kind="stable")
-        median_index = np.searchsorted(np.cumsum(weights[order]), weights.sum() / 2.0)
+        median_index = min(
+            int(np.searchsorted(np.cumsum(weights[order]), weights.sum() / 2.0)),
+            len(order) - 1,
+        )
         scales[index] = np.clip(ratios[order[median_index]], 0.0, 1.0)
-    previous_close = result["predicted_close"].to_numpy(dtype=float) / (1.0 + predicted)
+    original_predicted_close = result["predicted_close"].to_numpy(dtype=float)
+    denominator = 1.0 + predicted
+    safe_base_close = np.isfinite(denominator) & (np.abs(denominator) > 1e-12)
+    previous_close = np.divide(
+        original_predicted_close,
+        denominator,
+        out=np.full(len(result), np.nan, dtype=float),
+        where=safe_base_close,
+    )
     result["uncalibrated_predicted_return"] = predicted
     result["return_calibration_scale"] = scales
     result["return_calibration_rows"] = counts
     result["predicted_pct_change"] = predicted * scales
-    result["predicted_close"] = previous_close * (1.0 + result["predicted_pct_change"])
+    calibrated_close = previous_close * (1.0 + result["predicted_pct_change"])
+    # A malformed -100% raw forecast has no recoverable base close. Preserve its
+    # original close rather than emitting infinity or a fabricated price.
+    result["return_calibration_close_fallback"] = (~safe_base_close).astype(int)
+    result["predicted_close"] = np.where(
+        safe_base_close,
+        calibrated_close,
+        original_predicted_close,
+    )
     return result

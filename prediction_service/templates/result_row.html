@@ -1,0 +1,6 @@
+<tr data-direction="{{ row['预测方向'] }}" data-outcome="{{ 'hit' if row['方向预测正确'] else 'miss' }}">
+  <td class="date-cell">{{ row.get('预测目标交易日')|date }}</td><td class="subtle">{{ row['信号日期']|date }}</td>
+  <td><span class="direction {{ 'up' if row['预测方向'] == '上涨' else 'down' }}"><i data-lucide="{{ 'arrow-up-right' if row['预测方向'] == '上涨' else 'arrow-down-right' }}"></i>{{ row['预测方向'] }}</span></td>
+  <td class="right numeric">{{ row['预测次日涨跌幅']|signed_percent }}</td><td class="right numeric">{{ row['次日实际涨跌幅']|signed_percent }}</td><td class="right numeric">{{ row['置信度']|percent }}</td>
+  <td><span class="outcome {{ 'hit' if row['方向预测正确'] else 'miss' }}"><i data-lucide="{{ 'check' if row['方向预测正确'] else 'x' }}"></i>{{ '正确' if row['方向预测正确'] else '错误' }}</span></td><td class="subtle">{{ '事前预测' if row.get('记录来源') == 'live' else '历史回放' }}</td>
+</tr>
