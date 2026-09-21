@@ -36,6 +36,19 @@ def frame_to_csv_bytes(frame: pd.DataFrame) -> bytes:
     return b"\xef\xbb\xbf" + text.encode("utf-8")
 
 
+def read_features(path: str | Path) -> pd.DataFrame:
+    """Keep legacy parsing stable; new snapshots use exact float round trips."""
+    path = Path(path)
+    manifest_path = path.parent / "manifest.json"
+    version = 2
+    if manifest_path.exists():
+        version = json.loads(manifest_path.read_text(encoding="utf-8")).get("format_version", 1)
+    return pd.read_csv(
+        path, encoding="utf-8-sig",
+        float_precision="round_trip" if version >= 2 else None,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class ArchiveArtifact:
     directory: Path
@@ -103,7 +116,7 @@ def write_daily_archive(
                 files[relative_name] = sha256_file(staging / relative_name)
 
         stored_manifest = {
-            "format_version": 1,
+            "format_version": 2,
             "snapshot_id": snapshot_id,
             "created_at_utc": datetime.now(timezone.utc).isoformat(),
             "files": files,

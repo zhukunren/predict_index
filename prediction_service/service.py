@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
+import io
 import threading
 import traceback
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Callable
 
@@ -22,7 +23,10 @@ from .archive import (
     sha256_bytes,
     sha256_file,
     write_daily_archive,
+    read_features,
 )
+from .calendar import MarketCalendar, SHANGHAI
+from .metrics import statistics, clean_records
 from .config import Settings
 from .database import Database
 from .engine import (
@@ -85,6 +89,9 @@ class CandidatePrediction:
     outcome: dict[str, Any] | None
     outcome_fingerprint: str | None
     is_new: bool
+    target_date: str | None
+    generated_at: datetime
+    origin: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,6 +142,7 @@ class PredictionService:
         self._operation_lock = threading.RLock()
         self._calendar_lock = threading.Lock()
         self._trading_day_cache: dict[str, bool] = {}
+        self.calendar = MarketCalendar(self.database)
 
     def initialize(self, *, bootstrap: bool = True) -> None:
         self.database.initialize()
@@ -143,7 +151,7 @@ class PredictionService:
             self._ensure_release(session)
 
         if bootstrap and self._active_publication() is None and self.settings.local_feature_path.exists():
-            features = pd.read_csv(self.settings.local_feature_path, encoding="utf-8-sig")
+            features = read_features(self.settings.local_feature_path)
             self.publish_from_features(
                 features,
                 source="bootstrap",
@@ -185,6 +193,13 @@ class PredictionService:
         return self._ensure_release(session)
 
     def _assert_runtime_release(self, release: ModelRelease) -> None:
+        if self.settings.model_bundle_dir:
+            from .model_registry import ModelBundle
+            from .forecast_models import PRODUCTION_KEY
+            bundle = ModelBundle(self.settings.model_bundle_dir)
+            if release.id != bundle.manifest["releases"][PRODUCTION_KEY]["release_id"]:
+                raise ModelReleaseMismatchError("配置中的模型组合尚未正式激活，请使用模型组合发布命令。")
+            return
         identifier, _, _, _ = release_id(self.settings)
         if release.id != identifier:
             raise ModelReleaseMismatchError(
@@ -194,6 +209,12 @@ class PredictionService:
 
     def release_upgrade_required(self) -> bool:
         _, _, release = self._load_active_context()
+        if self.settings.model_bundle_dir:
+            try:
+                self._assert_runtime_release(release)
+                return False
+            except (ModelReleaseMismatchError, ValueError, OSError):
+                return True
         identifier, _, _, _ = release_id(self.settings)
         return release.id != identifier
 
@@ -205,13 +226,15 @@ class PredictionService:
         match can be promoted into a new release with its own prediction rows.
         """
 
+        if self.settings.model_bundle_dir:
+            raise ModelReleaseMismatchError("固定模型组合须通过独立版本发布命令更新，不能使用基线兼容发布入口。")
         with self._operation_lock:
             publication, snapshot, old_release = self._load_active_context()
             identifier, config, config_sha256, source_sha256 = release_id(self.settings)
             if old_release.id == identifier:
                 return None
             self._assert_archive_integrity(snapshot, publication)
-            features = pd.read_csv(snapshot.features_path, encoding="utf-8-sig")
+            features = read_features(snapshot.features_path)
             # Validate current code output against the frozen old-release ledger.
             self._candidate_plan(
                 features=features,
@@ -307,6 +330,7 @@ class PredictionService:
         snapshot_id: str,
         allow_new: bool,
         result: pd.DataFrame | None = None,
+        inherit_provenance: bool = True,
     ) -> tuple[pd.DataFrame, list[CandidatePrediction]]:
         if result is None:
             result = self.calculation_function(features, self.settings)
@@ -325,6 +349,14 @@ class PredictionService:
                 .order_by(PredictionLedger.signal_date.desc())
                 .limit(1)
             )
+            previous_rows = session.scalars(
+                select(PredictionLedger)
+                .where(PredictionLedger.signal_date.in_(signal_dates))
+                .order_by(PredictionLedger.created_at)
+            ).all()
+        provenance = {}
+        for previous in previous_rows:
+            provenance.setdefault((previous.signal_date, previous.prediction_fingerprint), previous)
 
         plan: list[CandidatePrediction] = []
         for _, row in result.iterrows():
@@ -369,6 +401,20 @@ class PredictionService:
                         f"实际结果漂移：信号日 {signal_date} 与既有结算不一致。"
                     )
 
+            previous = stored or (
+                provenance.get((signal_date, fingerprint)) if inherit_provenance else None
+            )
+            generated_at = previous.created_at if previous is not None else utcnow()
+            if generated_at.tzinfo is None:
+                generated_at = generated_at.replace(tzinfo=timezone.utc)
+            forecast_target = target_date or self.calendar.next_session(signal_date)
+            origin = "backfill"
+            if forecast_target:
+                opening = datetime.strptime(forecast_target, "%Y%m%d").replace(hour=9, minute=30, tzinfo=SHANGHAI)
+                if generated_at < opening:
+                    origin = "live"
+            else:
+                origin = "unknown"
             plan.append(
                 CandidatePrediction(
                     signal_date=signal_date,
@@ -379,6 +425,9 @@ class PredictionService:
                     outcome=outcome,
                     outcome_fingerprint=outcome_fingerprint,
                     is_new=is_new,
+                    target_date=forecast_target,
+                    generated_at=generated_at,
+                    origin=origin,
                 )
             )
         return result, plan
@@ -403,7 +452,7 @@ class PredictionService:
                     release_id=release.id,
                     snapshot_id=snapshot_id,
                     signal_date=item.signal_date,
-                    target_date=None,
+                    target_date=item.target_date,
                     base_close=item.base_close,
                     predicted_return=float(payload["predicted_return"]),
                     predicted_label=int(payload["predicted_label"]),
@@ -417,6 +466,7 @@ class PredictionService:
                     ),
                     prediction_fingerprint=item.fingerprint,
                     payload_json=json.dumps(payload, ensure_ascii=False, sort_keys=True),
+                    created_at=item.generated_at,
                 )
             )
 
@@ -449,6 +499,8 @@ class PredictionService:
         snapshot_id: str,
         release_id: str,
         as_of: str,
+        metadata: bool = True,
+        stored_metadata: pd.DataFrame | None = None,
     ) -> VerifiedArtifact:
         prediction_ids = {item.signal_date: item.prediction_id for item in plan}
         output_frame = public_frame(
@@ -458,6 +510,16 @@ class PredictionService:
             data_as_of_date=as_of,
             prediction_ids=prediction_ids,
         )
+        if metadata:
+            by_date = {item.signal_date: item for item in plan}
+            dates = output_frame["信号日期"].astype(str)
+            output_frame["预测目标交易日"] = dates.map(lambda day: by_date[day].target_date)
+            output_frame["记录来源"] = dates.map(lambda day: by_date[day].origin)
+            output_frame["预测生成时间"] = dates.map(lambda day: by_date[day].generated_at.astimezone(SHANGHAI).isoformat(timespec="seconds"))
+            if stored_metadata is not None:
+                frozen = stored_metadata.set_index(stored_metadata["信号日期"].astype(str))
+                for column in ("预测目标交易日", "记录来源", "预测生成时间"):
+                    output_frame[column] = dates.map(frozen[column])
         output_bytes = public_csv_bytes(output_frame)
         return VerifiedArtifact(
             snapshot_id=snapshot_id,
@@ -469,9 +531,35 @@ class PredictionService:
             csv_sha256=sha256_bytes(output_bytes),
         )
 
+    def _settle_outstanding(self, session, features: pd.DataFrame, release_id: str, snapshot_id: str) -> None:
+        """Resolve old pending rows even when downtime exceeds the export window."""
+        session.flush()
+        pending = session.scalars(
+            select(PredictionLedger)
+            .outerjoin(OutcomeResolution, OutcomeResolution.prediction_id == PredictionLedger.id)
+            .where(PredictionLedger.release_id == release_id, OutcomeResolution.prediction_id.is_(None))
+        ).all()
+        targets = target_dates_by_signal(features)
+        closes = feature_close_by_date(features)
+        for prediction in pending:
+            target = targets.get(prediction.signal_date)
+            if target is None:
+                continue
+            actual = closes[target] / closes[prediction.signal_date] - 1.0
+            payload = outcome_payload(pd.Series({"real_pct_change": actual, "correct": bool(prediction.predicted_label == int(actual > 0))}), target_date=target, base_close=prediction.base_close)
+            session.add(OutcomeResolution(
+                prediction_id=prediction.id, snapshot_id=snapshot_id, target_trade_date=target,
+                actual_return=float(payload["actual_return"]), actual_close=float(payload["actual_close"]),
+                correct=bool(payload["correct"]), outcome_fingerprint=payload_fingerprint(payload),
+                payload_json=json.dumps(payload, ensure_ascii=False, sort_keys=True),
+            ))
+
     def recompute_active(self) -> VerifiedArtifact:
         """Recompute from the archived snapshot and fail closed on any drift."""
 
+        if self.settings.model_bundle_dir:
+            from .portfolio import recompute_portfolio
+            return recompute_portfolio(self)
         with self._operation_lock:
             publication, snapshot, release = self._load_active_context()
             self._assert_runtime_release(release)
@@ -479,7 +567,7 @@ class PredictionService:
             features_path = Path(snapshot.features_path)
             if not features_path.exists():
                 raise ServiceNotReadyError("当前快照的特征归档文件不存在。")
-            features = pd.read_csv(features_path, encoding="utf-8-sig")
+            features = read_features(features_path)
             result, plan = self._candidate_plan(
                 features=features,
                 release=release,
@@ -492,6 +580,8 @@ class PredictionService:
                 snapshot_id=snapshot.id,
                 release_id=release.id,
                 as_of=snapshot.data_as_of,
+                metadata=json.loads(Path(snapshot.manifest_path).read_text(encoding="utf-8")).get("format_version", 1) >= 2,
+                stored_metadata=pd.read_csv(publication.public_csv_path, encoding="utf-8-sig", dtype={"预测目标交易日": "string"}),
             )
             if artifact.csv_sha256 != publication.public_csv_sha256:
                 raise PredictionDriftError(
@@ -521,19 +611,60 @@ class PredictionService:
             ):
                 raise PredictionDriftError("已发布 CSV 哈希不匹配。")
 
+    def read_published(self, context: tuple[Publication, MarketSnapshot, ModelRelease] | None = None) -> VerifiedArtifact:
+        """Serve the immutable publication independently of the installed model."""
+        publication, snapshot, release = context or self._load_active_context()
+        try:
+            self._assert_archive_integrity(snapshot, publication)
+            content = Path(publication.public_csv_path).read_bytes()
+            if sha256_bytes(content) != publication.public_csv_sha256:
+                raise PredictionDriftError("已发布 CSV 哈希不匹配。")
+            frame = pd.read_csv(io.BytesIO(content), encoding="utf-8-sig", float_precision="round_trip")
+            if len(frame) != publication.row_count or frame.empty:
+                raise PredictionDriftError("已发布 CSV 记录数不匹配。")
+        except (OSError, ValueError, KeyError) as exc:
+            raise PredictionDriftError("发布文件无法读取或格式无效。") from exc
+        return VerifiedArtifact(snapshot.id, release.id, snapshot.data_as_of, pd.DataFrame(), frame, content, publication.public_csv_sha256)
+
+    def health(self, now: datetime | None = None, *, artifact: VerifiedArtifact | None = None) -> dict[str, Any]:
+        try:
+            artifact = artifact or self.read_published()
+        except (ServiceNotReadyError, PredictionDriftError) as exc:
+            return {"status": "unavailable", "message": str(exc), "csv_available": False}
+        expected = self.calendar.expected_as_of(now or utcnow(), self.settings.scheduled_refresh_hour, self.settings.scheduled_refresh_minute)
+        status = "unknown" if expected is None else ("stale" if artifact.data_as_of < expected else "ok")
+        return {
+            "status": status, "csv_available": True,
+            "data_as_of": artifact.data_as_of, "expected_as_of": expected,
+            "snapshot_id": artifact.snapshot_id,
+            "message": {"ok": "发布数据已更新", "stale": "发布数据落后于应有交易日", "unknown": "交易日历尚未确认"}[status],
+        }
+
+    def recover_interrupted_jobs(self) -> None:
+        """Called only after the server acquires its exclusive instance lock."""
+        with self.database.session() as session:
+            for model in (RefreshJob, ShadowRun):
+                for job in session.scalars(select(model).where(model.status.in_(("queued", "running")))).all():
+                    job.status = "interrupted"
+                    job.finished_at = utcnow()
+                    job.message = "上次服务退出时任务中断，可重新提交。"
+
     @staticmethod
     def _assert_manifest_integrity(manifest_path: Path) -> None:
         if not manifest_path.exists():
             raise PredictionDriftError("归档清单文件缺失。")
 
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        expected_files = manifest.get("files")
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (ValueError, OSError) as exc:
+            raise PredictionDriftError("归档清单无法读取。") from exc
+        expected_files = manifest.get("files") if isinstance(manifest, dict) else None
         if not isinstance(expected_files, dict):
             raise PredictionDriftError("归档清单缺少文件哈希。")
         archive_root = manifest_path.parent
         for relative_path, expected_hash in expected_files.items():
             candidate = archive_root / str(relative_path)
-            if not candidate.exists() or sha256_file(candidate) != expected_hash:
+            if not candidate.resolve().is_relative_to(archive_root.resolve()) or not candidate.is_file() or sha256_file(candidate) != expected_hash:
                 raise PredictionDriftError(f"归档文件哈希不匹配：{relative_path}")
 
     def _current_canonical_features(self) -> tuple[pd.DataFrame | None, MarketSnapshot | None]:
@@ -547,7 +678,8 @@ class PredictionService:
         path = Path(snapshot.features_path)
         if not path.exists():
             raise ServiceNotReadyError("当前快照特征文件不存在。")
-        return pd.read_csv(path, encoding="utf-8-sig"), snapshot
+        self._assert_archive_integrity(snapshot, publication)
+        return read_features(path), snapshot
 
     def publish_from_features(
         self,
@@ -560,6 +692,12 @@ class PredictionService:
     ) -> VerifiedArtifact:
         """Verify history, append only new values, archive, and atomically publish."""
 
+        if self.settings.model_bundle_dir:
+            if release_id_override is not None:
+                raise ModelReleaseMismatchError("模型组合使用显式发布入口，不能覆盖单个版本。")
+            from .portfolio import publish_portfolio
+            return publish_portfolio(self, feature_frame, source=source, raw_frames=raw_frames,
+                                     actor=actor, fetch_context=source == "tushare")
         with self._operation_lock:
             candidate_features = canonicalize_features(feature_frame)
             current_features, parent_snapshot = self._current_canonical_features()
@@ -573,6 +711,12 @@ class PredictionService:
                 allow_new = True
 
             as_of = data_as_of(canonical_features)
+            known_sessions = self.calendar.sessions(str(canonical_features["trade_date"].iloc[0]).replace("-", ""), as_of)
+            if known_sessions is not None:
+                actual_dates = set(canonical_features["trade_date"].str.replace("-", "", regex=False))
+                missing = set(known_sessions) - actual_dates
+                if missing:
+                    raise ValueError(f"行情缺少交易日：{', '.join(sorted(missing)[:5])}")
             snapshot_id = str(uuid.uuid4())
             with self.database.session() as session:
                 release = (
@@ -660,6 +804,7 @@ class PredictionService:
                     release=release,
                     snapshot_id=snapshot_id,
                 )
+                self._settle_outstanding(session, canonical_features, release.id, snapshot_id)
 
                 session.execute(
                     update(Publication)
@@ -781,17 +926,34 @@ class PredictionService:
 
     def refresh_from_tushare(self, *, actor: str | None) -> VerifiedArtifact:
         features, raw_frames = self.fetch_tushare_features()
+        self.refresh_calendar()
         current_features, _ = self._current_canonical_features()
         if current_features is not None:
             merged = merge_append_only_features(current_features, features)
             if data_as_of(merged) <= data_as_of(current_features):
                 raise NoNewMarketDataError("行情数据截止日未增长，跳过发布。")
+        if self.settings.model_bundle_dir and self._active_publication() is not None:
+            self._assert_runtime_release(self._load_active_context()[2])
+        elif self._active_publication() is not None and self.release_upgrade_required():
+            self.promote_compatible_release(actor=actor)
         return self.publish_from_features(
             features,
             source="tushare",
             raw_frames=raw_frames,
             actor=actor,
         )
+
+    def refresh_calendar(self) -> None:
+        from 数据拉取脚本_tushare import get_pro
+        try:
+            now = pd.Timestamp.now(tz="Asia/Shanghai")
+            frame = get_pro(self._configured_tushare_token()).trade_cal(
+                exchange="SSE", start_date=self.settings.history_start_date,
+                end_date=(now + pd.Timedelta(days=370)).strftime("%Y%m%d"), fields="cal_date,is_open",
+            )
+            self.calendar.store(frame)
+        except Exception as exc:
+            self.record_audit("system", "calendar_refresh_failed", f"{type(exc).__name__}: 日历更新失败，继续使用已缓存日历。")
 
     def _shadow_runtime_settings(self) -> Settings:
         return shadow_settings(self.settings)
@@ -866,7 +1028,7 @@ class PredictionService:
             release_id_value = release.id
 
         self._assert_archive_integrity(snapshot, publication)
-        features = pd.read_csv(snapshot.features_path, encoding="utf-8-sig")
+        features = read_features(snapshot.features_path)
         shadow_runtime = self._shadow_runtime_settings()
         current_release_id, _, _, _ = release_id(shadow_runtime)
         if release_id_value != current_release_id:
@@ -881,6 +1043,7 @@ class PredictionService:
             snapshot_id=snapshot_id,
             allow_new=True,
             result=result,
+            inherit_provenance=False,
         )
         artifact = self._render_artifact(
             result=result,
@@ -975,31 +1138,13 @@ class PredictionService:
             raise PredictionDriftError("BiLSTM 影子结果 CSV 哈希不匹配。")
         self._assert_manifest_integrity(manifest_path)
         frame = pd.read_csv(result_path, encoding="utf-8-sig")
-        validation = frame.loc[frame["结果类型"].eq("循环验证")].copy()
-        correct = validation["方向预测正确"].astype("boolean")
-        up = validation.loc[validation["预测方向"].eq("上涨")]
-        down = validation.loc[validation["预测方向"].eq("下跌")]
-        up_accuracy = float(up["方向预测正确"].astype("boolean").mean()) if len(up) else None
-        down_accuracy = float(down["方向预测正确"].astype("boolean").mean()) if len(down) else None
-        return {
-            "rows": len(validation),
-            "accuracy": float(correct.mean()) if len(validation) else None,
-            "balanced_accuracy": (
-                (up_accuracy + down_accuracy) / 2.0
-                if up_accuracy is not None and down_accuracy is not None
-                else None
-            ),
-            "mean_confidence": (
-                float(pd.to_numeric(validation["置信度"], errors="coerce").mean())
-                if len(validation)
-                else None
-            ),
-        }
+        return statistics(frame)
 
     def shadow_dashboard_data(self) -> dict[str, Any]:
         with self.database.session() as session:
             run = session.scalar(
-                select(ShadowRun).order_by(ShadowRun.created_at.desc()).limit(1)
+                select(ShadowRun).where(ShadowRun.engine == "bilstm_causal")
+                .order_by(ShadowRun.created_at.desc()).limit(1)
             )
         if run is None:
             return {
@@ -1032,24 +1177,59 @@ class PredictionService:
         self._shadow_run_metrics(run)
         return Path(run.result_csv_path)
 
-    def dashboard_data(self) -> dict[str, Any]:
+    def history_frame(self, release_id: str, data_as_of: str) -> pd.DataFrame:
+        with self.database.session() as session:
+            pairs = session.execute(
+                select(PredictionLedger, OutcomeResolution)
+                .join(OutcomeResolution, OutcomeResolution.prediction_id == PredictionLedger.id)
+                .where(PredictionLedger.release_id == release_id, OutcomeResolution.target_trade_date <= data_as_of)
+                .order_by(OutcomeResolution.target_trade_date)
+            ).all()
+        records = []
+        for prediction, outcome in pairs:
+            generated = prediction.created_at.replace(tzinfo=timezone.utc) if prediction.created_at.tzinfo is None else prediction.created_at
+            opening = datetime.strptime(outcome.target_trade_date, "%Y%m%d").replace(hour=9, minute=30, tzinfo=SHANGHAI)
+            records.append({
+                "结果类型": "循环验证", "信号日期": int(prediction.signal_date),
+                "预测目标交易日": outcome.target_trade_date,
+                "预测方向": "上涨" if prediction.predicted_label else "下跌",
+                "预测次日涨跌幅": prediction.predicted_return,
+                "预测次日收盘价": prediction.predicted_close,
+                "置信度": prediction.calibrated_confidence,
+                "次日实际涨跌幅": outcome.actual_return,
+                "方向预测正确": outcome.correct,
+                "记录来源": "live" if generated < opening else "backfill",
+                "预测生成时间": generated.astimezone(SHANGHAI).isoformat(timespec="seconds"),
+            })
+        return pd.DataFrame(records, columns=["结果类型", "信号日期", "预测目标交易日", "预测方向", "预测次日涨跌幅", "预测次日收盘价", "置信度", "次日实际涨跌幅", "方向预测正确", "记录来源", "预测生成时间"])
+
+    def performance_data(self, days: int = 60) -> dict[str, Any]:
+        if not 1 <= days <= 5000:
+            raise ValueError("统计天数必须在 1 到 5000 之间。")
         publication, snapshot, release = self._load_active_context()
-        self._assert_archive_integrity(snapshot, publication)
-        frame = pd.read_csv(publication.public_csv_path, encoding="utf-8-sig")
-        validation = frame.loc[frame["结果类型"].eq("循环验证")].copy()
-        correct = validation["方向预测正确"].astype("boolean")
-        accuracy = float(correct.mean()) if len(validation) else None
-        up = validation.loc[validation["预测方向"].eq("上涨")]
-        down = validation.loc[validation["预测方向"].eq("下跌")]
-        up_accuracy = float(up["方向预测正确"].astype("boolean").mean()) if len(up) else None
-        down_accuracy = float(down["方向预测正确"].astype("boolean").mean()) if len(down) else None
-        balanced = (
-            (up_accuracy + down_accuracy) / 2.0
-            if up_accuracy is not None and down_accuracy is not None
-            else None
-        )
+        self.read_published((publication, snapshot, release))
+        history = self.history_frame(release.id, snapshot.data_as_of)
+        return {
+            "snapshot_id": snapshot.id,
+            "model_release": release.id,
+            "algorithm_id": release.algorithm_id,
+            "data_as_of": snapshot.data_as_of,
+            "metrics": {key: value for key, value in statistics(history, days).items() if key != "records"},
+            "recent_20": {key: value for key, value in statistics(history, 20).items() if key != "records"},
+        }
+
+    def dashboard_data(self, days: int = 60) -> dict[str, Any]:
+        if not 1 <= days <= 5000:
+            raise ValueError("统计天数必须在 1 到 5000 之间。")
+        publication, snapshot, release = self._load_active_context()
+        artifact = self.read_published((publication, snapshot, release))
+        frame = artifact.public_frame
+        history = self.history_frame(release.id, snapshot.data_as_of)
+        metrics = statistics(history, days)
         pending = frame.loc[frame["结果类型"].eq("次日预测")]
-        latest = pending.iloc[-1].to_dict() if len(pending) else None
+        latest = clean_records(pending)[-1] if len(pending) else None
+        if latest and not latest.get("预测目标交易日"):
+            latest["预测目标交易日"] = self.calendar.next_session(snapshot.data_as_of)
         veto = self._veto_attribution(snapshot)
         with self.database.session() as session:
             jobs = session.scalars(
@@ -1062,27 +1242,20 @@ class PredictionService:
             "publication": publication,
             "snapshot": snapshot,
             "release": release,
+            "model_name": json.loads(release.config_json).get("model_name", "原生产基线"),
+            "portfolio_enabled": bool(self.settings.model_bundle_dir),
             "release_upgrade_required": self.release_upgrade_required(),
-            "rows": frame.to_dict(orient="records"),
+            "rows": list(reversed(metrics["records"])),
             "latest": latest,
-            "metrics": {
-                "rows": len(validation),
-                "accuracy": accuracy,
-                "balanced_accuracy": balanced,
-                "up_rows": len(up),
-                "up_accuracy": up_accuracy,
-                "down_rows": len(down),
-                "down_accuracy": down_accuracy,
-                "mean_confidence": (
-                    float(pd.to_numeric(validation["置信度"], errors="coerce").mean())
-                    if len(validation)
-                    else None
-                ),
-            },
+            "metrics": metrics,
+            "days": days,
+            "health": self.health(artifact=artifact),
             "veto": veto,
             "shadow": self.shadow_dashboard_data(),
             "jobs": jobs,
             "publications": publications,
+            "scheduled": self.settings.scheduled_refresh_enabled,
+            "schedule_time": f"{self.settings.scheduled_refresh_hour:02d}:{self.settings.scheduled_refresh_minute:02d}",
         }
 
     def list_archives(self) -> list[tuple[Publication, MarketSnapshot]]:
@@ -1132,7 +1305,7 @@ class PredictionService:
         }
         if diagnostics.empty or not required.issubset(diagnostics.columns):
             return None
-        diagnostics = diagnostics.sort_values("trade_date").reset_index(drop=True)
+        diagnostics = diagnostics.loc[diagnostics["real_pct_change"].notna()].sort_values("trade_date").reset_index(drop=True)
         veto = pd.to_numeric(diagnostics["veto_applied"], errors="coerce").fillna(0).eq(1)
 
         def summarize(frame: pd.DataFrame, mask: pd.Series) -> dict[str, Any]:
@@ -1152,7 +1325,7 @@ class PredictionService:
             final_directional = np.where(final_label.gt(0), realized, -realized)
             base_directional = np.where(base_label.gt(0), realized, -realized)
             final_correct = selected["correct"].astype("boolean")
-            base_correct = final_label.eq((realized > 0).astype(int)).astype("boolean")
+            base_correct = base_label.eq((realized > 0).astype(int)).astype("boolean")
             return {
                 "rows": len(selected),
                 "trigger_rate": len(selected) / total if total else None,
@@ -1207,18 +1380,20 @@ class RefreshManager:
                     f"{trigger}:{idempotency_key}" if idempotency_key else trigger
                 )
                 if idempotency_key:
-                    existing = session.scalar(
+                    attempts = session.scalars(
                         select(RefreshJob)
                         .where(RefreshJob.trigger == stored_trigger)
-                        .where(
-                            RefreshJob.status.in_(
-                                ("queued", "running", "succeeded", "skipped", "drift_detected")
-                            )
-                        )
                         .order_by(RefreshJob.created_at.desc())
-                    )
-                    if existing is not None:
-                        return existing.id, False
+                    ).all()
+                    if attempts:
+                        existing = attempts[0]
+                        finished = existing.finished_at or existing.created_at
+                        finished = finished.replace(tzinfo=timezone.utc) if finished.tzinfo is None else finished
+                        publication = self.service._active_publication()
+                        snapshot = session.get(MarketSnapshot, publication.snapshot_id) if publication else None
+                        complete = snapshot is not None and snapshot.data_as_of >= idempotency_key
+                        if complete or existing.status in {"queued", "running"} or len(attempts) >= 6 or utcnow() - finished < timedelta(minutes=10):
+                            return existing.id, False
                 running = session.scalar(
                     select(RefreshJob).where(RefreshJob.status.in_(("queued", "running")))
                 )
@@ -1242,9 +1417,28 @@ class RefreshManager:
                 return
             job.status = "running"
             job.started_at = utcnow()
+            job.heartbeat_at = utcnow()
             actor = job.requested_by
+            trigger = job.trigger
+        heartbeat_stop = threading.Event()
+
+        def heartbeat() -> None:
+            while not heartbeat_stop.wait(10):
+                try:
+                    with self.service.database.session() as session:
+                        current = session.get(RefreshJob, job_id)
+                        if current is not None and current.status == "running":
+                            current.heartbeat_at = utcnow()
+                except Exception:
+                    break
+
+        pulse = threading.Thread(target=heartbeat, daemon=True, name="refresh-heartbeat")
+        pulse.start()
         try:
-            artifact = self.service.refresh_from_tushare(actor=actor)
+            if trigger == "promotion":
+                artifact = self.service.promote_compatible_release(actor=actor) or self.service.read_published()
+            else:
+                artifact = self.service.refresh_from_tushare(actor=actor)
         except (HistoricalMarketDataDriftError, PredictionDriftError) as exc:
             status = "drift_detected"
             message = str(exc)
@@ -1270,6 +1464,9 @@ class RefreshManager:
                         "bilstm_shadow_schedule_failed",
                         f"{type(exc).__name__}: {exc}",
                     )
+        finally:
+            heartbeat_stop.set()
+            pulse.join(timeout=2)
         with self.service.database.session() as session:
             job = session.get(RefreshJob, job_id)
             if job is not None:
@@ -1290,7 +1487,7 @@ class RefreshManager:
             return session.get(RefreshJob, job_id)
 
     def shutdown(self) -> None:
-        self._executor.shutdown(wait=False, cancel_futures=True)
+        self._executor.shutdown(wait=True, cancel_futures=True)
 
 
 class ShadowManager:
@@ -1323,4 +1520,4 @@ class ShadowManager:
         return self.service.get_shadow_run(run_id)
 
     def shutdown(self) -> None:
-        self._executor.shutdown(wait=False, cancel_futures=True)
+        self._executor.shutdown(wait=True, cancel_futures=True)

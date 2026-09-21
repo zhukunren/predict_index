@@ -8,7 +8,7 @@ import pandas as pd
 import pytest
 
 import 循环验证脚本 as core
-import 预测脚本 as predictor
+from scripts import predict as predictor
 import return_calibration
 from return_calibration import calibrate_returns
 

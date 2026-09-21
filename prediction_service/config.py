@@ -118,6 +118,7 @@ class Settings:
     retry_sleep_seconds: float
     rate_limit_sleep_seconds: float
     index_global_min_interval: float
+    model_bundle_dir: Path | None = None
 
     @classmethod
     def from_config(
@@ -280,6 +281,11 @@ class Settings:
         if not admin_username:
             raise ConfigurationError("配置项 [管理员] 账号不能为空。")
 
+        bundle_value = _optional(_value(parser, "服务", "模型组合目录", ""))
+        model_bundle_dir = _resolve_path(bundle_value, config_dir=config_dir) if bundle_value else None
+        if model_bundle_dir and scheduled_refresh_enabled and scheduled_refresh_hour < 20:
+            raise ConfigurationError("期权＋资金流模型使用当日期权数据，定时刷新必须安排在上海时间 20:00 之后。")
+
         return cls(
             root_dir=root,
             database_url=database_url,
@@ -317,6 +323,7 @@ class Settings:
             retry_sleep_seconds=retry_sleep_seconds,
             rate_limit_sleep_seconds=rate_limit_sleep_seconds,
             index_global_min_interval=index_global_min_interval,
+            model_bundle_dir=model_bundle_dir,
         )
 
     @classmethod

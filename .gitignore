@@ -18,3 +18,9 @@ artifacts/production_shadow_*.log
 # 命令行本地结果；冻结基线和验收证据保留在 artifacts/baseline、evaluation、research。
 artifacts/run/
 artifacts/tmp/
+# 研究验收结果保留在本机或独立归档，不进入生产代码仓库。
+artifacts/evaluation/
+artifacts/research/
+# Legacy CLI defaults; new entry points write under artifacts/run/.
+/drp_feim_*.csv
+/tushare_validation_prediction.csv

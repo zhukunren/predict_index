@@ -95,11 +95,27 @@ def canonicalize_features(frame: pd.DataFrame) -> pd.DataFrame:
     if "trade_date" not in frame.columns:
         raise ValueError("特征数据缺少 trade_date 列。")
     result = frame.copy()
-    dates = pd.to_datetime(result["trade_date"], errors="coerce")
+    if result.empty:
+        raise ValueError("特征数据为空。")
+    values = result["trade_date"].astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
+    compact = values.str.fullmatch(r"\d{8}")
+    dates = pd.to_datetime(values.where(~compact), errors="coerce", format="mixed")
+    dates.loc[compact] = pd.to_datetime(values.loc[compact], format="%Y%m%d", errors="coerce")
     if dates.isna().any():
         raise ValueError("特征数据包含无法解析的 trade_date。")
     result["trade_date"] = dates.dt.strftime("%Y-%m-%d")
-    result = result.sort_values("trade_date").drop_duplicates("trade_date", keep="last")
+    if result["trade_date"].duplicated().any():
+        raise ValueError("特征数据包含重复交易日。")
+    for column in ("open", "high", "low", "close"):
+        if column not in result:
+            raise ValueError(f"特征数据缺少 {column} 列。")
+        numeric = pd.to_numeric(result[column], errors="coerce")
+        if not np.isfinite(numeric).all() or numeric.le(0).any():
+            raise ValueError(f"特征数据的 {column} 必须为正的有限数值。")
+        result[column] = numeric
+    if result["high"].lt(result["low"]).any():
+        raise ValueError("最高价不能低于最低价。")
+    result = result.sort_values("trade_date")
     return result.reset_index(drop=True)
 
 
@@ -124,7 +140,8 @@ def _series_matches(left: pd.Series, right: pd.Series) -> bool:
             np.isclose(
                 left_numeric.to_numpy(dtype=float),
                 right_numeric.to_numpy(dtype=float),
-                rtol=0.0,
+                # Allow CSV round-trip noise, while keeping the frozen values.
+                rtol=1e-14,
                 atol=1e-12,
                 equal_nan=True,
             ).all()
@@ -169,6 +186,8 @@ def merge_append_only_features(
             )
 
     new_dates = candidate_by_date.index.difference(existing_by_date.index)
+    if any(date <= existing_by_date.index.max() for date in new_dates):
+        raise HistoricalMarketDataDriftError("数据源插入了早于已冻结截止日的交易日。")
     appended = candidate_by_date.loc[new_dates].reset_index(drop=True)
     combined = pd.concat([existing, appended], ignore_index=True, sort=False)
     return canonicalize_features(combined)

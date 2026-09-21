@@ -3,16 +3,25 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Query
+from filelock import FileLock, Timeout
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
+from starlette.middleware.cors import CORSMiddleware
+from sqlalchemy import select
 
 from .config import Settings
+from .calendar import SHANGHAI
+from .metrics import finite
+from .archive import frame_to_csv_bytes
+from .model_comparison import comparison_data, comparison_frame, model_csv
+from .models import RefreshJob
 from .scheduler import DailyRefreshScheduler
 from .security import LoginRateLimiter, csrf_token, validate_csrf, verify_password
 from .service import (
@@ -42,6 +51,7 @@ class AppContainer:
             settings,
             self.refresh_manager,
             is_trading_day=service.is_sse_trading_day,
+            expected_date=lambda now: service.calendar.expected_as_of(now, settings.scheduled_refresh_hour, settings.scheduled_refresh_minute),
         )
         self.login_limiter = LoginRateLimiter()
 
@@ -86,10 +96,29 @@ def _context(request: Request, **kwargs: Any) -> dict[str, Any]:
 
 
 def _as_percent(value: float | None) -> str:
-    return "-" if value is None else f"{value:.2%}"
+    return "-" if not finite(value) else f"{float(value):.2%}"
+
+
+def _date(value: Any) -> str:
+    if value is None or value == "":
+        return "待确认"
+    text = str(value).removesuffix(".0").replace("-", "")
+    return f"{text[:4]}-{text[4:6]}-{text[6:8]}" if len(text) == 8 and text.isdigit() else str(value)
+
+
+def _local_time(value: datetime | None) -> str:
+    if value is None:
+        return "-"
+    aware = value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+    return aware.astimezone(SHANGHAI).strftime("%m-%d %H:%M:%S")
 
 
 TEMPLATES.env.filters["percent"] = _as_percent
+TEMPLATES.env.filters["date"] = _date
+TEMPLATES.env.filters["localtime"] = _local_time
+TEMPLATES.env.filters["signed_percent"] = lambda value: f"{float(value):+.3%}" if finite(value) else "-"
+TEMPLATES.env.filters["price"] = lambda value: f"{float(value):,.2f}" if finite(value) else "-"
+TEMPLATES.env.filters["job_label"] = lambda value: {"queued": "排队中", "running": "运行中", "succeeded": "已完成", "failed": "失败", "skipped": "暂无新数据", "drift_detected": "数据差异", "interrupted": "已中断"}.get(value, value)
 
 
 def create_app(
@@ -104,20 +133,27 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
-        container.service.initialize(bootstrap=bootstrap)
-        container.scheduler.start()
-        if runtime_settings.bilstm_shadow_enabled:
-            try:
-                container.submit_active_shadow(actor="system")
-            except ServiceNotReadyError:
-                pass
+        instance_lock = FileLock(str(runtime_settings.root_dir / "service.lock"), timeout=0)
         try:
+            instance_lock.acquire()
+        except Timeout as exc:
+            raise RuntimeError("该数据目录已被另一个服务实例使用。") from exc
+        try:
+            container.service.initialize(bootstrap=bootstrap)
+            container.service.recover_interrupted_jobs()
+            container.scheduler.start()
+            if runtime_settings.bilstm_shadow_enabled:
+                try:
+                    container.submit_active_shadow(actor="system")
+                except ServiceNotReadyError:
+                    pass
             yield
         finally:
             container.scheduler.stop()
             container.refresh_manager.shutdown()
             container.shadow_manager.shutdown()
             container.service.shutdown()
+            instance_lock.release()
 
     app = FastAPI(
         title="上证指数次日预测服务",
@@ -132,6 +168,7 @@ def create_app(
         same_site="lax",
         https_only=runtime_settings.cookie_secure,
     )
+    app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["GET", "HEAD"], expose_headers=["ETag", "X-Data-As-Of", "X-Snapshot-Id", "X-Model-Release"])
     app.mount("/static", StaticFiles(directory=str(PACKAGE_DIR / "static")), name="static")
     app.state.container = container
 
@@ -139,23 +176,38 @@ def create_app(
     def root() -> RedirectResponse:
         return RedirectResponse(url="/admin/", status_code=303)
 
-    @app.get("/healthz")
-    def healthz() -> dict[str, str]:
-        try:
-            publication, snapshot, _ = container.service._load_active_context()
-        except ServiceNotReadyError:
-            return {"status": "starting"}
-        return {
-            "status": "ok",
-            "snapshot_id": snapshot.id,
-            "data_as_of": snapshot.data_as_of,
-            "publication_id": publication.id,
-        }
+    @app.get("/livez")
+    def livez():
+        return {"status": "ok"}
 
-    @app.get("/api/v1/sh000001/latest.csv")
-    def latest_csv() -> Response:
+    @app.get("/healthz")
+    def healthz():
+        health = container.service.health()
+        return JSONResponse(health, status_code=200 if health["status"] == "ok" else 503)
+
+    @app.get("/api/v1/sh000001/status")
+    def publication_status():
+        return container.service.health()
+
+    @app.get("/api/v1/sh000001/metrics")
+    def prediction_metrics(days: int = Query(60, ge=1, le=5000)):
         try:
-            artifact = container.service.recompute_active()
+            return container.service.performance_data(days)
+        except ServiceNotReadyError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @app.exception_handler(FileNotFoundError)
+    async def not_found(_request, _exc):
+        return JSONResponse({"detail": "所请求的文件或记录不存在。"}, status_code=404)
+
+    @app.exception_handler(PredictionDriftError)
+    async def invalid_archive(_request, exc):
+        return JSONResponse({"detail": str(exc)}, status_code=503)
+
+    @app.api_route("/api/v1/sh000001/latest.csv", methods=["GET", "HEAD"])
+    def latest_csv(request: Request) -> Response:
+        try:
+            artifact = container.service.read_published()
         except (ServiceNotReadyError, ModelReleaseMismatchError, PredictionDriftError) as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         headers = {
@@ -166,6 +218,12 @@ def create_app(
             "X-Data-As-Of": artifact.data_as_of,
             "Cache-Control": "no-cache",
         }
+        supplied = request.headers.get("if-none-match", "")
+        if any(tag.strip().removeprefix("W/") in {headers["ETag"], "*"} for tag in supplied.split(",")):
+            return Response(status_code=304, headers=headers)
+        if request.method == "HEAD":
+            headers["Content-Length"] = str(len(artifact.csv_bytes))
+            return Response(headers=headers, media_type="text/csv; charset=utf-8")
         return Response(
             content=artifact.csv_bytes,
             media_type="text/csv; charset=utf-8",
@@ -240,18 +298,27 @@ def create_app(
         return RedirectResponse(url="/admin/login", status_code=303)
 
     @app.get("/admin/", include_in_schema=False)
-    def dashboard(request: Request):
+    def dashboard(request: Request, days: int | None = Query(None, ge=1, le=5000), view: str = "overview"):
         redirect = _admin_redirect(request)
         if redirect:
             return redirect
         job_id = request.query_params.get("job")
         shadow_run_id = request.query_params.get("shadow")
+        selected_days = days if days is not None else int(request.session.get("statistics_days", 60))
+        selected_days = max(1, min(5000, selected_days))
+        request.session["statistics_days"] = selected_days
+        if view not in {"overview", "history", "jobs", "research"}:
+            view = "overview"
+        error = None
         try:
-            data = container.service.dashboard_data()
-        except ServiceNotReadyError:
+            data = container.service.dashboard_data(selected_days)
+        except (ServiceNotReadyError, PredictionDriftError) as exc:
             data = None
+            error = str(exc)
         job = container.refresh_manager.get(job_id) if job_id else None
         shadow_run = container.shadow_manager.get(shadow_run_id) if shadow_run_id else None
+        with container.service.database.session() as session:
+            jobs = session.scalars(select(RefreshJob).order_by(RefreshJob.created_at.desc()).limit(20)).all()
         return TEMPLATES.TemplateResponse(
             request,
             "dashboard.html",
@@ -261,8 +328,58 @@ def create_app(
                 job=job,
                 shadow_run=shadow_run,
                 service_ready=data is not None,
+                error=error, days=selected_days, view=view, jobs=jobs,
+                scheduled=runtime_settings.scheduled_refresh_enabled,
+                active_jobs=[item.id for item in jobs if item.status in {"queued", "running"}],
             ),
         )
+
+    @app.get("/admin/models", include_in_schema=False)
+    def models_page(request: Request, days: int | None = Query(None, ge=1, le=5000),
+                    sample: Literal["all", "live"] = "all"):
+        redirect = _admin_redirect(request)
+        if redirect:
+            return redirect
+        selected_days = days if days is not None else max(1, min(5000, int(request.session.get("statistics_days", 60))))
+        request.session["statistics_days"] = selected_days
+        error = None
+        try:
+            comparison = comparison_data(container.service, selected_days, sample)
+        except (ServiceNotReadyError, PredictionDriftError) as exc:
+            comparison, error = None, str(exc)
+        return TEMPLATES.TemplateResponse(request, "models.html", _context(
+            request, view="models", comparison=comparison, days=selected_days, sample=sample, error=error,
+        ))
+
+    @app.get("/admin/api/models", include_in_schema=False)
+    def models_api(request: Request, days: int = Query(60, ge=1, le=5000),
+                   sample: Literal["all", "live"] = "all"):
+        redirect = _admin_redirect(request)
+        if redirect:
+            return redirect
+        return comparison_data(container.service, days, sample)
+
+    @app.get("/admin/models/comparison.csv", include_in_schema=False)
+    def comparison_download(request: Request, days: int = Query(60, ge=1, le=5000),
+                            sample: Literal["all", "live"] = "all"):
+        redirect = _admin_redirect(request)
+        if redirect:
+            return redirect
+        data = comparison_data(container.service, days, sample)
+        if data is None:
+            raise HTTPException(status_code=503, detail="模型组合尚未激活。")
+        return Response(frame_to_csv_bytes(comparison_frame(data)), media_type="text/csv; charset=utf-8",
+                        headers={"Content-Disposition": f'attachment; filename="model_comparison_{sample}_{days}.csv"',
+                                 "Cache-Control": "no-store"})
+
+    @app.get("/admin/models/{model_key}/latest.csv", include_in_schema=False)
+    def model_download(request: Request, model_key: str):
+        redirect = _admin_redirect(request)
+        if redirect:
+            return redirect
+        return Response(model_csv(container.service, model_key), media_type="text/csv; charset=utf-8",
+                        headers={"Content-Disposition": f'attachment; filename="{model_key}_latest.csv"',
+                                 "Cache-Control": "no-store"})
 
     @app.post("/admin/refresh", include_in_schema=False)
     async def refresh(request: Request):
@@ -278,7 +395,18 @@ def create_app(
             "refresh_requested" if created else "refresh_joined_existing_job",
             job_id,
         )
-        return RedirectResponse(url=f"/admin/?job={job_id}", status_code=303)
+        return RedirectResponse(url=f"/admin/?view=jobs&job={job_id}", status_code=303)
+
+    @app.post("/admin/promote", include_in_schema=False)
+    async def promote(request: Request):
+        actor = _admin_username(request)
+        if actor is None:
+            return RedirectResponse(url="/admin/login", status_code=303)
+        form = await request.form()
+        if not validate_csrf(request.session, str(form.get("csrf_token", ""))):
+            raise HTTPException(status_code=403, detail="CSRF 校验失败。")
+        job_id, _ = container.refresh_manager.submit(trigger="promotion", actor=actor)
+        return RedirectResponse(url=f"/admin/?view=jobs&job={job_id}", status_code=303)
 
     @app.post("/admin/shadow/bilstm", include_in_schema=False)
     async def run_bilstm_shadow(request: Request):
@@ -296,7 +424,7 @@ def create_app(
             "bilstm_shadow_requested" if created else "bilstm_shadow_joined_existing_run",
             run_id,
         )
-        return RedirectResponse(url=f"/admin/?shadow={run_id}", status_code=303)
+        return RedirectResponse(url=f"/admin/?view=research&shadow={run_id}", status_code=303)
 
     @app.get("/admin/jobs/{job_id}", include_in_schema=False)
     def job_status(request: Request, job_id: str) -> Response:

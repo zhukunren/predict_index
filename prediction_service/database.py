@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 
-from sqlalchemy import Engine, event, text
+from sqlalchemy import Engine, event, text, inspect
 from sqlalchemy.engine import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -34,10 +34,14 @@ class Database:
     def _enable_sqlite_foreign_keys(dbapi_connection, _connection_record) -> None:
         cursor = dbapi_connection.cursor()
         cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.execute("PRAGMA busy_timeout=15000")
         cursor.close()
 
     def initialize(self) -> None:
         Base.metadata.create_all(self.engine)
+        if "heartbeat_at" not in {column["name"] for column in inspect(self.engine).get_columns("refresh_jobs")}:
+            with self.engine.begin() as connection:
+                connection.execute(text("ALTER TABLE refresh_jobs ADD COLUMN heartbeat_at TIMESTAMP"))
         if self.engine.dialect.name == "sqlite":
             self._install_sqlite_immutability_triggers()
 

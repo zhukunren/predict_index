@@ -292,7 +292,7 @@ def test_public_csv_is_unauthenticated_and_admin_uses_password(tmp_path: Path):
         assert "运行概览" in dashboard.text
 
 
-def test_public_api_fails_closed_when_recalculation_drifts(tmp_path: Path):
+def test_public_api_keeps_verified_publication_when_recalculation_drifts(tmp_path: Path):
     state = {"drift": False}
 
     def changing_calculation(features: pd.DataFrame, settings: Settings) -> pd.DataFrame:
@@ -305,7 +305,7 @@ def test_public_api_fails_closed_when_recalculation_drifts(tmp_path: Path):
     settings = Settings.for_test(tmp_path, validation_days=2)
     service = PredictionService(settings, calculation_function=changing_calculation)
     service.initialize(bootstrap=False)
-    service.publish_from_features(_features(), source="test", raw_frames=None, actor="tester")
+    published = service.publish_from_features(_features(), source="test", raw_frames=None, actor="tester")
     state["drift"] = True
 
     with pytest.raises(PredictionDriftError):
@@ -314,7 +314,8 @@ def test_public_api_fails_closed_when_recalculation_drifts(tmp_path: Path):
     app = create_app(settings, service=service, bootstrap=False)
     with TestClient(app) as client:
         response = client.get("/api/v1/sh000001/latest.csv")
-    assert response.status_code == 503
+    assert response.status_code == 200
+    assert response.content == published.csv_bytes
 
 
 def test_archive_feature_hash_mismatch_fails_closed(tmp_path: Path):
@@ -336,6 +337,7 @@ def test_refresh_skips_when_provider_has_no_new_market_day(tmp_path: Path, monke
         _features(), source="test", raw_frames=None, actor="tester"
     )
     monkeypatch.setattr(service, "fetch_tushare_features", lambda: (_features(), {}))
+    monkeypatch.setattr(service, "refresh_calendar", lambda: None)
 
     with pytest.raises(NoNewMarketDataError):
         service.refresh_from_tushare(actor="tester")
@@ -388,6 +390,8 @@ class _RefreshManagerStub:
         self.calls: list[dict[str, object]] = []
 
     def submit(self, **kwargs):
+        if kwargs in self.calls:
+            return "job-1", False
         self.calls.append(kwargs)
         return "job-1", True
 
@@ -438,19 +442,16 @@ def test_veto_diagnostics_are_archived_and_reported_on_dashboard(tmp_path: Path)
 
     veto = service.dashboard_data()["veto"]
     assert veto is not None
-    assert veto["all"]["rows"] == 2
-    assert veto["all"]["trigger_rate"] == pytest.approx(2.0 / 3.0)
+    assert veto["all"]["rows"] == 1
+    assert veto["all"]["trigger_rate"] == pytest.approx(0.5)
+    assert veto["all"]["accuracy_lift"] == pytest.approx(1.0)
     assert veto["recent_20"]["directional_return_lift"] is not None
 
 
-def test_english_script_aliases_export_legacy_apis():
-    legacy_loop = importlib.import_module("循环验证脚本")
-    legacy_predictor = importlib.import_module("预测脚本")
-    legacy_fetcher = importlib.import_module("数据拉取脚本_tushare")
-
-    assert importlib.import_module("loop_validation").loop_validate_prediction_results is legacy_loop.loop_validate_prediction_results
-    assert importlib.import_module("predictor").save_prediction_csv is legacy_predictor.save_prediction_csv
-    assert importlib.import_module("tushare_fetcher").fetch_all is legacy_fetcher.fetch_all
+def test_organized_script_entrypoints_export_expected_apis():
+    assert callable(importlib.import_module("scripts.loop_validation").main)
+    assert callable(importlib.import_module("scripts.predict").main)
+    assert callable(importlib.import_module("scripts.fetch_tushare").main)
 
 
 def test_compatible_release_promotion_preserves_old_ledger(tmp_path: Path):
@@ -510,7 +511,7 @@ def test_dashboard_renders_veto_monitoring_panel(tmp_path: Path):
                 "password": "test-password",
             },
         )
-        dashboard = client.get("/admin/")
+        dashboard = client.get("/admin/?view=research")
 
     assert dashboard.status_code == 200
     assert "低波动状态反转归因" in dashboard.text
@@ -633,7 +634,7 @@ def test_dashboard_shows_completed_bilstm_shadow_without_replacing_default(tmp_p
                 "password": "test-password",
             },
         )
-        dashboard = client.get("/admin/")
+        dashboard = client.get("/admin/?view=research")
         shadow_csv = client.get(f"/admin/shadow-runs/{run.id}/results.csv")
 
     assert dashboard.status_code == 200

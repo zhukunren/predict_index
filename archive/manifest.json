@@ -14,6 +14,11 @@
       "sha256": "B9D9949A97456863852B4BF20C37CE3972F7225B10EF190DBBE4BE896B63A579"
     },
     {
+      "original_path": "drp_feim_next_day_prediction.csv (2026-09-17 runtime copy)",
+      "archived_path": "archive/legacy_results/drp_feim_next_day_prediction_20260917.csv",
+      "sha256": "11B032EABE9330D5B9D5D94698D48E461A060CF811CE00800CD6E28690739AD3"
+    },
+    {
       "original_path": "drp_feim_prediction_results.csv",
       "archived_path": "archive/legacy_results/drp_feim_prediction_results.csv",
       "sha256": "DD920DE58869EAA5F1808C3FF9D6415727CD0D74625349384E36AFE3B26B6F31"

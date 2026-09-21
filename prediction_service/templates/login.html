@@ -1,25 +1,8 @@
 {% extends "base.html" %}
-
-{% block title %}管理员登录 | 上证指数预测{% endblock %}
+{% block title %}管理员登录 | 上证指数{% endblock %}
 {% block main_class %}login-main{% endblock %}
-
 {% block content %}
-<section class="login-panel" aria-labelledby="login-title">
-  <div class="login-brand">上证指数预测</div>
-  <h1 id="login-title">管理员登录</h1>
-  {% if setup_required %}
-  <p class="notice error">服务尚未设置管理员密码。请填写 <code>config.ini</code> 中的“管理员/密码”后重启服务。</p>
-  {% endif %}
-  {% if error %}
-  <p class="notice error">{{ error }}</p>
-  {% endif %}
-  <form method="post" action="/admin/login" class="login-form">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <label for="username">账号</label>
-    <input id="username" name="username" autocomplete="username" required autofocus>
-    <label for="password">密码</label>
-    <input id="password" name="password" type="password" autocomplete="current-password" required>
-    <button class="primary-button" type="submit" {% if setup_required %}disabled{% endif %}>登录</button>
-  </form>
-</section>
+<section class="login-panel"><a class="brand" href="/admin/"><span class="brand-mark"><i data-lucide="chart-no-axes-combined"></i></span><span>指数观察<small>SHANGHAI INDEX</small></span></a><h1>管理员登录</h1><p class="subtle login-caption">上证指数 · 次日预测工作台</p>
+{% if setup_required %}<p class="notice error">管理员账号尚未配置。</p>{% endif %}{% if error %}<p class="notice error" role="alert">{{ error }}</p>{% endif %}
+<form method="post" action="/admin/login" class="login-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label for="username">账号</label><input id="username" name="username" autocomplete="username" required autofocus><label for="password">密码</label><div class="password-input"><input id="password" name="password" type="password" autocomplete="current-password" required><button type="button" class="icon-button" data-toggle-password title="显示密码" aria-label="显示密码" aria-pressed="false"><i data-lucide="eye"></i></button></div><button class="button primary" {% if setup_required %}disabled{% endif %}>登录<i data-lucide="arrow-right"></i></button></form><a class="login-download" href="/api/v1/sh000001/latest.csv"><i data-lucide="file-down"></i>公开预测 CSV</a></section>
 {% endblock %}
