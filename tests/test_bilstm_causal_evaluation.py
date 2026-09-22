@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+from dataclasses import asdict
+
+import pytest
 from pathlib import Path
 
 import numpy as np
@@ -68,6 +72,7 @@ def test_bilstm_contract_is_pure_and_uses_fixed_refit_interval():
     assert evaluation.DEFAULT_OVERRIDES["signal_engine"] == "state_veto_rule"
 
 
+@pytest.mark.research_artifacts
 def test_v1_candidate_is_compatible_with_production_bilstm_contract():
     import 循环验证脚本 as core
 
@@ -91,3 +96,63 @@ def test_v1_candidate_is_compatible_with_production_bilstm_contract():
     assert provenance["predictions_sha256"] == evaluation.sha256(
         (evaluation.V1_CANDIDATE_DIR / "bilstm_causal_predictions.csv").read_bytes()
     )
+
+
+@pytest.fixture
+def reusable_candidate(tmp_path, monkeypatch):
+    """Synthetic loader fixture, never an archived model-performance claim."""
+    import 循环验证脚本 as core
+
+    frozen = evaluation.load_frozen_input()
+    monkeypatch.setattr(evaluation, "ROOT", tmp_path)
+    config, defaults = evaluation.production_config_and_options(core)
+    options = evaluation._candidate_options(core, frozen, config,
+                                            defaults, evaluation.BILSTM_OVERRIDES)
+    directory = tmp_path / "synthetic_candidate"
+    directory.mkdir()
+    predictions = _frame(40)
+    path = directory / "bilstm_causal_predictions.csv"
+    predictions.to_csv(path, index=False)
+    contract = {"frozen_input": {"sha256": evaluation.FROZEN_INPUT_SHA256},
+                "independent_test_period": {"start_date": evaluation.TEST_START, "end_date": evaluation.TEST_END},
+                "model_config": asdict(config), "bilstm_options": options}
+    summary = {"parity_passed": True, "bilstm_causal": {"predictions_sha256": evaluation.sha256(path.read_bytes())}}
+    for name, value in (("contract.json", contract), ("summary.json", summary),
+                        ("bilstm_live_replay_parity.json", {"passed": True})):
+        (directory / name).write_text(json.dumps(value))
+    return directory, config, options
+
+
+def test_candidate_loader_accepts_matching_contract_and_hashes(reusable_candidate):
+    directory, config, options = reusable_candidate
+    frame, parity, provenance = evaluation.load_reusable_bilstm_candidate(directory, config=config, options=options)
+    assert len(frame) == 40 and parity["passed"]
+    assert provenance["predictions_sha256"] == evaluation.sha256((directory / "bilstm_causal_predictions.csv").read_bytes())
+
+
+@pytest.mark.parametrize("filename", ["contract.json", "summary.json", "bilstm_causal_predictions.csv", "bilstm_live_replay_parity.json"])
+def test_candidate_loader_rejects_missing_evidence(reusable_candidate, filename):
+    directory, config, options = reusable_candidate
+    (directory / filename).unlink()
+    with pytest.raises(FileNotFoundError, match="incomplete"):
+        evaluation.load_reusable_bilstm_candidate(directory, config=config, options=options)
+
+
+@pytest.mark.parametrize("change", ["input", "options", "parity", "predictions"])
+def test_candidate_loader_rejects_tampered_evidence(reusable_candidate, change):
+    directory, config, options = reusable_candidate
+    if change == "predictions":
+        path = directory / "bilstm_causal_predictions.csv"
+        path.write_bytes(path.read_bytes() + b"\n")
+    else:
+        path = directory / ("bilstm_live_replay_parity.json" if change == "parity" else "contract.json")
+        content = json.loads(path.read_text())
+        if change == "input":
+            content["frozen_input"]["sha256"] = "wrong-input"
+        elif change == "options":
+            content["bilstm_options"]["bilstm_refit_interval"] = 999
+        else:
+            content["passed"] = False
+        path.write_text(json.dumps(content))
+    with pytest.raises(ValueError):
+        evaluation.load_reusable_bilstm_candidate(directory, config=config, options=options)

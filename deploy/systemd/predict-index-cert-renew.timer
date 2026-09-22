@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily predict.dwzq.top TLS certificate renewal check
+
+[Timer]
+OnCalendar=*-*-* 03:20:00
+RandomizedDelaySec=15m
+Persistent=true
+Unit=predict-index-cert-renew.service
+
+[Install]
+WantedBy=timers.target

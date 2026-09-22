@@ -46,6 +46,36 @@ def test_float_round_trip_preserves_frozen_large_values(tmp_path):
     assert read_features(path)["amount"].iloc[0] == frame["amount"].iloc[0]
 
 
+
+def test_late_optional_features_preserve_gaps_across_retries_and_multiple_days():
+    frozen = _features(3)
+    frozen["hangseng_gap_lag1"] = [0.01, 0.02, None]
+
+    provider = _features(4)
+    provider["hangseng_gap_lag1"] = [0.01, 0.02, 0.03, 0.04]
+    merged = merge_append_only_features(frozen, provider)
+
+    assert len(merged) == 4
+    assert pd.isna(merged.loc[2, "hangseng_gap_lag1"])
+    assert merged.loc[3, "hangseng_gap_lag1"] == 0.04
+    pd.testing.assert_frame_equal(merge_append_only_features(merged, provider), merged)
+    next_provider = _features(5)
+    next_provider["hangseng_gap_lag1"] = [0.01, 0.02, 0.03, 0.04, 0.05]
+    next_day = merge_append_only_features(merged, next_provider)
+    assert len(next_day) == 5
+    assert pd.isna(next_day.loc[2, "hangseng_gap_lag1"])
+    pd.testing.assert_frame_equal(merge_append_only_features(next_day, next_provider), next_day)
+    missing_old_value = next_provider.copy()
+    missing_old_value.loc[0, "hangseng_gap_lag1"] = None
+    with pytest.raises(HistoricalMarketDataDriftError):
+        merge_append_only_features(next_day, missing_old_value)
+
+    changed_older_row = provider.copy()
+    changed_older_row.loc[1, "hangseng_gap_lag1"] = 0.99
+    with pytest.raises(HistoricalMarketDataDriftError):
+        merge_append_only_features(frozen, changed_older_row)
+
+
 def test_compact_dates_and_invalid_market_rows():
     frame = _features(3)
     frame["trade_date"] = [20260915, 20260916, 20260917]
@@ -191,3 +221,33 @@ def test_display_records_normalize_missing_and_nonfinite_values():
     records = clean_records(frame)
     assert records == [{"return": None, "correct": None}, {"return": None, "correct": False}, {"return": 0.01, "correct": True}]
     json.dumps(records, allow_nan=False)
+
+
+@pytest.mark.parametrize("column", ["amount", "custom_signal"])
+def test_late_values_cannot_fill_required_or_unrecognized_frozen_features(column):
+    frozen = _features(3)
+    provider = _features(4)
+    frozen[column] = [1.0, 2.0, None]
+    provider[column] = [1.0, 2.0, 3.0, 4.0]
+    with pytest.raises(HistoricalMarketDataDriftError, match=column):
+        merge_append_only_features(frozen, provider)
+
+
+@pytest.mark.parametrize("value", [float("inf"), float("-inf"), "unavailable"])
+def test_late_optional_features_must_be_finite_numbers(value):
+    frozen = _features(3)
+    provider = _features(4)
+    frozen["hangseng_gap_lag1"] = [0.01, 0.02, None]
+    provider["hangseng_gap_lag1"] = [0.01, 0.02, value, 0.04]
+    with pytest.raises(HistoricalMarketDataDriftError):
+        merge_append_only_features(frozen, provider)
+
+
+def test_float_tolerance_still_applies_when_an_optional_gap_is_filled():
+    frozen = _features(3)
+    provider = _features(4)
+    frozen["hangseng_gap_lag1"] = [0.010000000000000002, 0.02, None]
+    provider["hangseng_gap_lag1"] = [0.01, 0.02, 0.03, 0.04]
+    merged = merge_append_only_features(frozen, provider)
+    assert merged.loc[0, "hangseng_gap_lag1"] == frozen.loc[0, "hangseng_gap_lag1"]
+    assert pd.isna(merged.loc[2, "hangseng_gap_lag1"])

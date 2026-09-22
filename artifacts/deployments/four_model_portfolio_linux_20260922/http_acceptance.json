@@ -1,0 +1,34 @@
+{
+  "old_cookie_rejected": true,
+  "admin_login": true,
+  "models": [
+    {
+      "key": "option_moneyflow",
+      "role": "production",
+      "rows": 60
+    },
+    {
+      "key": "baseline",
+      "role": "shadow",
+      "rows": 60
+    },
+    {
+      "key": "moneyflow",
+      "role": "shadow",
+      "rows": 60
+    },
+    {
+      "key": "moneyflow_price",
+      "role": "shadow",
+      "rows": 60
+    }
+  ],
+  "paired_rows": 60,
+  "live_rows": 0,
+  "public_rows": 61,
+  "model_release": "9927f8d45a3913eb4feb6e3af6a61681759a6f20baf9f87aa52abf84c5195abe",
+  "public_matches_production_model": true,
+  "etag_verified": true,
+  "conditional_get": 304,
+  "admin_pages": "passed"
+}

@@ -1,0 +1,10 @@
+[Unit]
+Description=Renew predict.dwzq.top TLS certificate
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+UMask=0077
+TimeoutStartSec=5min
+ExecStart=/usr/local/sbin/predict-index-cert-renew

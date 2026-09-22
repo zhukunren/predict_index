@@ -29,6 +29,18 @@ def context_for_snapshot(service, bundle, snapshot):
     return bundle.context()
 
 
+def activation_features(bundle, current_features):
+    """Start a new release from its own pinned inputs without rewriting old snapshots."""
+    frozen = canonicalize_features(read_frame(bundle.directory / "seed/features.csv"))
+    current = canonicalize_features(current_features)
+    newer = current.loc[current.trade_date.gt(frozen.trade_date.iloc[-1])]
+    candidate = canonicalize_features(pd.concat([frozen, newer], ignore_index=True))
+    # Reject changed known values, missing dates and schema changes. Only a new
+    # model may adopt its pinned, now-available optional values in a new snapshot.
+    merge_append_only_features(current, candidate)
+    return candidate
+
+
 def releases_for_bundle(bundle):
     releases = {}
     for model in MODELS:
@@ -51,19 +63,21 @@ def publish_portfolio(service, feature_frame, *, source, actor, raw_frames=None,
         bundle = ModelBundle(service.settings.model_bundle_dir)
         releases = releases_for_bundle(bundle)
         current, parent = service._current_canonical_features()
-        features = canonicalize_features(feature_frame)
-        if current is not None:
-            features = merge_append_only_features(current, features)
-        as_of = data_as_of(features)
         active = service._active_publication()
         production = releases[PRODUCTION_KEY]
+        features = canonicalize_features(feature_frame)
+        if current is not None:
+            retained = merge_append_only_features(current, features)
+            if not (activate and active and active.release_id != production.id):
+                features = retained
+        as_of = data_as_of(features)
         if active and active.release_id != production.id and not activate:
             raise ModelReleaseMismatchError("请先显式激活模型组合，再执行日常刷新。")
         if active and active.release_id == production.id and parent.data_as_of == as_of:
             return service.read_published()
-        earliest = datetime.strptime(as_of, "%Y%m%d").replace(hour=20, tzinfo=SHANGHAI)
+        earliest = datetime.strptime(as_of, "%Y%m%d").replace(hour=18, minute=30, tzinfo=SHANGHAI)
         if utcnow() < earliest:
-            raise NoNewMarketDataError("当日期权模型最早在上海时间 20:00 后计算发布。")
+            raise NoNewMarketDataError("当日期权模型最早在上海时间 18:30 后计算发布。")
         target = service.calendar.next_session(as_of)
         if target is None:
             raise ValueError("无法确认下一交易日，模型组合暂不发布。")
@@ -136,7 +150,7 @@ def persist_portfolio(service, bundle, features, results, context, releases, *,
         manifest={"source": source, "parent_snapshot_id": parent.id if parent else None,
                   "data_as_of": as_of, "release_id": releases[PRODUCTION_KEY].id,
                   "model_bundle_id": bundle.manifest["bundle_id"], "production_model": PRODUCTION_KEY,
-                  "models": metadata, "receipts": list(receipts), "scheduled_time_shanghai": "20:15",
+                  "models": metadata, "receipts": list(receipts), "scheduled_time_shanghai": "18:30",
                   "activation_basis": "explicit_user_selection", "historical_gate_passed": False},
     )
     # Every release, all forecasts and the active pointer commit together.

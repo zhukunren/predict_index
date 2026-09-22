@@ -69,11 +69,12 @@ def aggregate_options(raw, contracts, required_dates):
     return pd.DataFrame(rows)
 
 
-def option_features(signal_dates, daily, calendar, *, lag_sessions=1, publication_hour=18):
-    if lag_sessions not in (0, 1) or not 0 <= publication_hour <= 23:
+def option_features(signal_dates, daily, calendar, *, lag_sessions=1, publication_hour=18, publication_minute=0):
+    if (lag_sessions not in (0, 1) or not 0 <= publication_hour <= 23
+            or not 0 <= publication_minute <= 59):
         raise ValueError("Invalid option timing policy.")
-    if lag_sessions == 0 and publication_hour < 20:
-        raise ValueError("Same-day option research requires publication at or after 20:00.")
+    if lag_sessions == 0 and (publication_hour, publication_minute) < (18, 30):
+        raise ValueError("Same-day option research requires publication at or after 18:30.")
     dates = pd.Index(pd.Series(signal_dates).to_numpy(dtype=int))
     sessions = pd.Index(pd.Series(calendar).to_numpy(dtype=int))
     for name, values in (("signal", dates), ("calendar", sessions)):

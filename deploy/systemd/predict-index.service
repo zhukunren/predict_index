@@ -1,0 +1,21 @@
+[Unit]
+Description=Predict Index Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/data/projects/predict_index
+Environment=PYTHONUNBUFFERED=1
+Environment=OMP_NUM_THREADS=1
+Environment=OPENBLAS_NUM_THREADS=1
+Environment=MKL_NUM_THREADS=1
+UMask=0077
+ExecStart=/data/projects/predict_index/.venv/bin/python -m scripts.run_service --config /data/projects/predict_index/config.ini
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

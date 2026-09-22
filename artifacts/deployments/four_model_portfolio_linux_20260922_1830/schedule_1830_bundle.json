@@ -1,0 +1,32 @@
+{
+  "status": "verified",
+  "bundle_id": "14044eac4323f3f5d953796c503e3f3d70d19df9f4e947f010f08d3fb71f4250",
+  "schedule_time_shanghai": "18:30",
+  "runtime_publication_hour": 18,
+  "runtime_publication_minute": 30,
+  "forecast_fields_unchanged": true,
+  "independent_replay": {
+    "option_moneyflow": {
+      "rows": 1400,
+      "exact_match": true
+    },
+    "baseline": {
+      "rows": 1400,
+      "exact_match": true
+    },
+    "moneyflow": {
+      "rows": 1400,
+      "exact_match": true
+    },
+    "moneyflow_price": {
+      "rows": 1400,
+      "exact_match": true
+    }
+  },
+  "release_ids": {
+    "baseline": "da1c8505d8060d7cb37fe042d0308d382cc5167918a7845928208f3593911230",
+    "moneyflow": "eb3a7f7709faf5c90d00e32c95f0b4e5a72afacae4d39a31a79b1a98736c13b7",
+    "moneyflow_price": "b1f70c060effc37f4c2885600f6a60cc666dc3ece4d6c90bae09942ecdf238f1",
+    "option_moneyflow": "72bb51a239bf19caddc432ce3440a485da4c8ae454cd087b7ba3d99ae9506114"
+  }
+}

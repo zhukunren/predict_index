@@ -1,0 +1,86 @@
+[
+  {
+    "name": "daily_20260917",
+    "received_at": "2026-09-22T08:25:44.809117+00:00",
+    "rows": 5553,
+    "sha256": "1ed0fef56a387d78b3ae0f44e46c0c663b150b4cc7868e684b2b2a68a8c79e9a"
+  },
+  {
+    "name": "daily_20260918",
+    "received_at": "2026-09-22T08:25:45.349683+00:00",
+    "rows": 5553,
+    "sha256": "8c2339b485bd699dae6a7e9071cf56221dbf07eba83d401a3352695e642b9991"
+  },
+  {
+    "name": "daily_20260921",
+    "received_at": "2026-09-22T08:25:45.800993+00:00",
+    "rows": 5553,
+    "sha256": "307ec2fb669afefa9acd1535a349829a2b44c40220f37e47e963544e0cbffcdc"
+  },
+  {
+    "name": "moneyflow_20260916",
+    "received_at": "2026-09-22T08:25:46.094853+00:00",
+    "rows": 5550,
+    "sha256": "cebb1d7afd7df9b3769ac7fd2e5bbafa87fec02be44958e2fd27014d49096fc4"
+  },
+  {
+    "name": "daily_20260916",
+    "received_at": "2026-09-22T08:25:46.354529+00:00",
+    "rows": 5550,
+    "sha256": "fa53d22f0dc966b7eef9b20693a73ab64800f5a6b2c314a17e7960ca07cadabf"
+  },
+  {
+    "name": "moneyflow_20260917",
+    "received_at": "2026-09-22T08:25:46.666213+00:00",
+    "rows": 5553,
+    "sha256": "0a7db06fcd79df1c14c0d710d19a252bae285d7defd71294ab5e45a675a87e24"
+  },
+  {
+    "name": "moneyflow_20260918",
+    "received_at": "2026-09-22T08:25:47.172282+00:00",
+    "rows": 5553,
+    "sha256": "00b4073a254cf07d083a018bcea06fdc0833435e56408d6c20c1973c3053b099"
+  },
+  {
+    "name": "global_spx_20260920",
+    "received_at": "2026-09-22T08:25:47.489935+00:00",
+    "rows": 3,
+    "sha256": "01fb025e1a4fcf18fe4c03c428d00b11370c13e955191be8926f336733285ab6"
+  },
+  {
+    "name": "global_nasdaq_20260920",
+    "received_at": "2026-09-22T08:25:53.546718+00:00",
+    "rows": 3,
+    "sha256": "ee965d202b1e61de687d9c8386ed761e9eb71f70413996d6a65bd6ebf0f65fc4"
+  },
+  {
+    "name": "option_contracts",
+    "received_at": "2026-09-22T08:25:53.858289+00:00",
+    "rows": 5040,
+    "sha256": "3c80e1f50918aab403bddf838e45b1b35d05b2a4ebafe742fadb95ef019cc1b2"
+  },
+  {
+    "name": "options_20260916",
+    "received_at": "2026-09-22T08:25:53.972828+00:00",
+    "rows": 694,
+    "sha256": "3e16324dc8b6a4249a085c57713ccb6ae1fc92d0155ef98c65920c896b7c2480"
+  },
+  {
+    "name": "options_20260917",
+    "received_at": "2026-09-22T08:25:54.069192+00:00",
+    "rows": 694,
+    "sha256": "d683aa58547ca3876230494e0103222e1d33b9513b3679d520005fdc007d7f26"
+  },
+  {
+    "name": "options_20260918",
+    "received_at": "2026-09-22T08:25:54.153730+00:00",
+    "rows": 694,
+    "sha256": "b641e2d9721f0179f7c19d600aafc2c121a483b12782bc5c7f0e150afca9a337"
+  },
+  {
+    "name": "options_20260921",
+    "received_at": "2026-09-22T08:25:54.252116+00:00",
+    "rows": 694,
+    "sha256": "b5f471840a90056069ef3edbac5e435d2c3b9a8a84719aef0bfa043d50bda833"
+  }
+]

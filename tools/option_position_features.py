@@ -62,11 +62,12 @@ def aggregate_positions(raw, contracts, required_dates):
     return totals.merge(pd.DataFrame(rows), on="trade_date", validate="one_to_one")
 
 
-def position_features(signal_dates, daily, calendar, *, lag_sessions=1, publication_hour=18):
-    if lag_sessions not in (0, 1) or not 0 <= publication_hour <= 23:
+def position_features(signal_dates, daily, calendar, *, lag_sessions=1, publication_hour=18, publication_minute=0):
+    if (lag_sessions not in (0, 1) or not 0 <= publication_hour <= 23
+            or not 0 <= publication_minute <= 59):
         raise ValueError("Invalid option position timing policy.")
-    if lag_sessions == 0 and publication_hour < 20:
-        raise ValueError("Same-day option research requires publication at or after 20:00.")
+    if lag_sessions == 0 and (publication_hour, publication_minute) < (18, 30):
+        raise ValueError("Same-day option research requires publication at or after 18:30.")
     signals, calendar = date_values(signal_dates), date_values(calendar)
     source = daily.copy()
     source["trade_date"] = date_values(source.trade_date).to_numpy()

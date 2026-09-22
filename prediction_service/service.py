@@ -633,11 +633,25 @@ class PredictionService:
             return {"status": "unavailable", "message": str(exc), "csv_available": False}
         expected = self.calendar.expected_as_of(now or utcnow(), self.settings.scheduled_refresh_hour, self.settings.scheduled_refresh_minute)
         status = "unknown" if expected is None else ("stale" if artifact.data_as_of < expected else "ok")
+        message = {"ok": "发布数据已更新", "stale": "发布数据落后于应有交易日", "unknown": "交易日历尚未确认"}[status]
+        with self.database.session() as session:
+            release = session.get(ModelRelease, artifact.release_id)
+        runtime_matches = True
+        try:
+            if release is None:
+                raise ModelReleaseMismatchError("发布模型版本不存在。")
+            self._assert_runtime_release(release)
+        except (ModelReleaseMismatchError, ValueError, OSError):
+            runtime_matches = False
+            status, message = "model_mismatch", "发布模型与配置或冻结运行包不一致。"
         return {
             "status": status, "csv_available": True,
             "data_as_of": artifact.data_as_of, "expected_as_of": expected,
             "snapshot_id": artifact.snapshot_id,
-            "message": {"ok": "发布数据已更新", "stale": "发布数据落后于应有交易日", "unknown": "交易日历尚未确认"}[status],
+            "model_release": artifact.release_id,
+            "algorithm_id": release.algorithm_id if release else None,
+            "runtime_matches": runtime_matches,
+            "message": message,
         }
 
     def recover_interrupted_jobs(self) -> None:

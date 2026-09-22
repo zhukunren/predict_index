@@ -4,6 +4,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 import io
 import json
+from pathlib import Path
 import re
 
 import pandas as pd
@@ -21,11 +22,14 @@ from test_prediction_service import _service, _features, _fake_calculation
 
 
 @pytest.fixture
-def portfolio_service(tmp_path, monkeypatch):
+def portfolio_service(tmp_path, monkeypatch, request):
     service = _service(tmp_path)
     days = pd.date_range("2026-01-01", "2026-02-28")
     service.calendar.store(pd.DataFrame({"cal_date": days.strftime("%Y%m%d"), "is_open": (days.dayofweek < 5).astype(int)}))
-    service.publish_from_features(_features(8), source="original", raw_frames=None, actor="test")
+    initial = _features(8)
+    if getattr(request, "param", False):
+        initial["hangseng_gap_lag1"] = [0.01] * 7 + [None]
+    service.publish_from_features(initial, source="original", raw_frames=None, actor="test")
     service.settings = replace(service.settings, model_bundle_dir=tmp_path / "models")
     manifest = {"bundle_id": "test-bundle", "releases": {}}
     for model in MODELS:
@@ -153,3 +157,35 @@ def test_admin_comparison_auth_windows_downloads_and_empty_live_view(portfolio_s
         assert client.get("/admin/models/nonexistent/latest.csv").status_code == 404
         assert client.get("/admin/models?days=0").status_code == 422
         assert client.get("/admin/models?sample=bogus").status_code == 422
+
+
+def test_health_reports_a_configured_portfolio_that_is_not_activated(portfolio_service):
+    service = portfolio_service
+    before = service.health()
+    assert before["status"] == "model_mismatch"
+    assert before["csv_available"] is True
+    assert before["runtime_matches"] is False
+    published = activate(service)
+    after = service.health()
+    assert after["runtime_matches"] is True
+    assert after["model_release"] == published.release_id
+    assert after["algorithm_id"] == "fixed_option_moneyflow"
+
+
+@pytest.mark.parametrize("portfolio_service", [True], indirect=True)
+def test_new_release_uses_its_own_optional_inputs_without_rewriting_old_snapshot(portfolio_service):
+    service = portfolio_service
+    original, snapshot = service._current_canonical_features()
+    old_bytes = Path(snapshot.features_path).read_bytes()
+    candidate = _features(8)
+    candidate["hangseng_gap_lag1"] = [0.01] * 7 + [0.02]
+    portfolio.publish_portfolio(service, candidate, source="test_activation", actor="test", activate=True)
+    current, _ = service._current_canonical_features()
+    assert current.hangseng_gap_lag1.iloc[-1] == 0.02
+    assert pd.isna(original.hangseng_gap_lag1.iloc[-1])
+    assert Path(snapshot.features_path).read_bytes() == old_bytes
+    changed = _features(9)
+    changed["hangseng_gap_lag1"] = [0.01] * 7 + [0.99, 0.03]
+    from prediction_service.engine import HistoricalMarketDataDriftError
+    with pytest.raises(HistoricalMarketDataDriftError):
+        portfolio.publish_portfolio(service, changed, source="tushare", actor="test")

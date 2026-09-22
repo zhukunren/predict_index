@@ -76,8 +76,8 @@ def test_aggregation_and_features_match_prefixes_and_ignore_future_activity(lag_
 def test_same_day_positions_reject_early_or_invalid_publication():
     dates, contracts, raw = inputs()
     daily = aggregate_positions(raw, contracts, dates)
-    with pytest.raises(ValueError, match="20:00"):
-        position_features(dates.iloc[6:], daily, dates, lag_sessions=0, publication_hour=19)
+    with pytest.raises(ValueError, match="18:30"):
+        position_features(dates.iloc[6:], daily, dates, lag_sessions=0, publication_hour=18)
     with pytest.raises(ValueError, match="timing"):
         position_features(dates.iloc[6:], daily, dates, lag_sessions=-1, publication_hour=20)
 

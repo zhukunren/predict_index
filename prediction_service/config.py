@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import configparser
 import math
+import os
 import re
 import secrets
 from dataclasses import dataclass
 from pathlib import Path
+
+from filelock import FileLock
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -79,14 +82,21 @@ def _load_or_create_session_secret(root: Path, configured: str | None) -> str:
         return configured
 
     secret_path = root / "session_secret.txt"
-    if secret_path.exists():
-        existing = secret_path.read_text(encoding="utf-8").strip()
-        if existing:
-            return existing
-
-    secret = secrets.token_urlsafe(48)
-    secret_path.write_text(secret + "\n", encoding="utf-8")
-    return secret
+    with FileLock(str(root / "session_secret.lock")):
+        descriptor = os.open(
+            secret_path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600,
+        )
+        with os.fdopen(descriptor, "r+", encoding="utf-8") as handle:
+            if os.name == "posix":
+                os.fchmod(handle.fileno(), 0o600)
+            existing = handle.read().strip()
+            if existing:
+                return existing
+            secret = secrets.token_urlsafe(48)
+            handle.seek(0)
+            handle.write(secret + "\n")
+            handle.truncate()
+            return secret
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,7 +160,9 @@ class Settings:
             _value(parser, "服务", "数据目录", "service_data"),
             config_dir=config_dir,
         )
-        root.mkdir(parents=True, exist_ok=True)
+        root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if os.name == "posix":
+            root.chmod(0o700)
         archive_dir = root / "archives"
         archive_dir.mkdir(parents=True, exist_ok=True)
         shadow_archive_dir = root / "shadow_archives"
@@ -213,7 +225,7 @@ class Settings:
             option="刷新小时",
         )
         scheduled_refresh_minute = _parse_int(
-            _value(parser, "服务", "刷新分钟", "15"),
+            _value(parser, "服务", "刷新分钟", "30"),
             section="服务",
             option="刷新分钟",
         )
@@ -283,8 +295,11 @@ class Settings:
 
         bundle_value = _optional(_value(parser, "服务", "模型组合目录", ""))
         model_bundle_dir = _resolve_path(bundle_value, config_dir=config_dir) if bundle_value else None
-        if model_bundle_dir and scheduled_refresh_enabled and scheduled_refresh_hour < 20:
-            raise ConfigurationError("期权＋资金流模型使用当日期权数据，定时刷新必须安排在上海时间 20:00 之后。")
+        if model_bundle_dir and scheduled_refresh_enabled and (
+            scheduled_refresh_hour,
+            scheduled_refresh_minute,
+        ) < (18, 30):
+            raise ConfigurationError("期权＋资金流模型使用当日期权数据，定时刷新必须安排在上海时间 18:30 之后。")
 
         return cls(
             root_dir=root,
@@ -331,7 +346,9 @@ class Settings:
         """Build an isolated configuration without loading local credentials."""
 
         root = root_dir.resolve()
-        root.mkdir(parents=True, exist_ok=True)
+        root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if os.name == "posix":
+            root.chmod(0o700)
         values: dict[str, object] = {
             "root_dir": root,
             "database_url": f"sqlite:///{(root / 'test.db').as_posix()}",
@@ -353,7 +370,7 @@ class Settings:
             "tushare_token": "test-tushare-token",
             "scheduled_refresh_enabled": False,
             "scheduled_refresh_hour": 18,
-            "scheduled_refresh_minute": 15,
+            "scheduled_refresh_minute": 30,
             "retry_count": 0,
             "retry_sleep_seconds": 0.0,
             "rate_limit_sleep_seconds": 0.0,

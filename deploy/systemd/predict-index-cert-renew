@@ -1,0 +1,12 @@
+#!/bin/sh
+set -eu
+
+lego=/usr/bin/lego
+lego_path=/etc/letsencrypt/lego-predict
+domain=predict.dwzq.top
+email=admin@dwzq.top
+
+"$lego" --path "$lego_path" --email "$email" --domains "$domain" \
+    --accept-tos --http --http.webroot /var/www/certbot --http-timeout 30 \
+    renew --days 30 --no-random-sleep \
+    --renew-hook /usr/local/sbin/predict-index-cert-reload

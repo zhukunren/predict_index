@@ -233,12 +233,13 @@ def test_frozen_version_rejects_changed_runtime_and_seed(tmp_path, monkeypatch):
         fixed.load_candidate(tmp_path)
 
 
+@pytest.mark.research_artifacts
 def test_frozen_candidate_records_a_real_snapshot_without_publication(tmp_path, monkeypatch):
     from tools.fixed_downside_candidate import read_frame, predict
 
     seed = Path(__file__).resolve().parents[1] / "artifacts/evaluation/ensemble_moneyflow_price_downside_v1"
     if not (seed / "candidate_predictions.csv").is_file():
-        pytest.skip("Real-data integration requires the frozen research fixture.")
+        pytest.fail("Restore the frozen research fixture before running -m research_artifacts.")
     market = read_frame(seed / "features.csv")
     market = market.loc[pd.to_datetime(market.trade_date).dt.strftime("%Y%m%d").astype(int).le(20260916)].reset_index(drop=True)
     baseline = read_frame(seed / "baseline.csv")

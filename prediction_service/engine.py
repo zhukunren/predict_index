@@ -25,6 +25,12 @@ SOURCE_FILES = (
     "tushare_prediction_pipeline.py",
 )
 TARGET_COLUMNS = {"target_next_return", "target_next_direction"}
+# Late provider responses can fill optional Hong Kong features that were unknown
+# when a snapshot was frozen. Keep those frozen gaps for every later replay.
+OPTIONAL_LAGGED_FEATURES = frozenset(
+    f"hangseng_{name}_lag1"
+    for name in ("ret1", "ret5", "vol20", "gap", "intraday", "range", "vol_chg", "pct_chg")
+)
 
 
 class HistoricalMarketDataDriftError(RuntimeError):
@@ -124,19 +130,15 @@ def data_as_of(features: pd.DataFrame) -> str:
     return str(normalized["trade_date"].iloc[-1]).replace("-", "")
 
 
-def _series_matches(left: pd.Series, right: pd.Series) -> bool:
+def _series_match_mask(left: pd.Series, right: pd.Series) -> pd.Series:
     left_numeric = pd.to_numeric(left, errors="coerce")
     right_numeric = pd.to_numeric(right, errors="coerce")
-    comparable = left.notna() | right.notna()
     numeric_like = (
-        comparable.sum() == 0
-        or (
-            left_numeric[comparable].notna().all()
-            and right_numeric[comparable].notna().all()
-        )
+        (left.isna() | left_numeric.notna()).all()
+        and (right.isna() | right_numeric.notna()).all()
     )
     if numeric_like:
-        return bool(
+        return pd.Series(
             np.isclose(
                 left_numeric.to_numpy(dtype=float),
                 right_numeric.to_numpy(dtype=float),
@@ -144,9 +146,14 @@ def _series_matches(left: pd.Series, right: pd.Series) -> bool:
                 rtol=1e-14,
                 atol=1e-12,
                 equal_nan=True,
-            ).all()
+            ),
+            index=left.index,
         )
-    return bool(left.fillna("<NA>").astype(str).eq(right.fillna("<NA>").astype(str)).all())
+    return left.fillna("<NA>").astype(str).eq(right.fillna("<NA>").astype(str))
+
+
+def _series_matches(left: pd.Series, right: pd.Series) -> bool:
+    return bool(_series_match_mask(left, right).all())
 
 
 def merge_append_only_features(
@@ -176,16 +183,20 @@ def merge_append_only_features(
         )
 
     common_dates = existing_by_date.index.intersection(candidate_by_date.index)
+    new_dates = candidate_by_date.index.difference(existing_by_date.index)
     for column in sorted(existing_columns - {"trade_date"}):
-        if not _series_matches(
-            existing_by_date.loc[common_dates, column],
-            candidate_by_date.loc[common_dates, column],
-        ):
+        frozen = existing_by_date.loc[common_dates, column]
+        candidate = candidate_by_date.loc[common_dates, column]
+        matches = _series_match_mask(frozen, candidate)
+        late_optional_value = pd.Series(False, index=common_dates)
+        if column in OPTIONAL_LAGGED_FEATURES:
+            late_optional_value = frozen.isna() & np.isfinite(pd.to_numeric(candidate, errors="coerce"))
+        invalid = (~matches) & (~late_optional_value)
+        if invalid.any():
             raise HistoricalMarketDataDriftError(
                 f"数据源修订了已冻结特征：{column}。"
             )
 
-    new_dates = candidate_by_date.index.difference(existing_by_date.index)
     if any(date <= existing_by_date.index.max() for date in new_dates):
         raise HistoricalMarketDataDriftError("数据源插入了早于已冻结截止日的交易日。")
     appended = candidate_by_date.loc[new_dates].reset_index(drop=True)

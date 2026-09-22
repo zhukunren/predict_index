@@ -1,0 +1,21 @@
+# Frozen model hashes cover raw bytes, including original line endings.
+/artifacts/releases/** -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
+/prediction_service/forecast_models.py -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
+/prediction_service/model_registry.py -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
+/regularized_direction.py -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
+/return_calibration.py -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
+/tools/breadth_features.py -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
+/tools/context_residual_model.py -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
+/tools/direction_rule_candidates.py -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
+/tools/downside_specialist.py -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
+/tools/evaluate_direction_bias.py -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
+/tools/evaluate_prediction_candidate.py -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
+/tools/evaluate_selective_context.py -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
+/tools/global_risk_features.py -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
+/tools/liquidity_features.py -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
+/tools/moneyflow_features.py -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
+/tools/option_features.py -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
+/tools/option_position_features.py -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
+/tushare_prediction_pipeline.py -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
+/循环验证脚本.py -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
+/数据拉取脚本_tushare.py -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol

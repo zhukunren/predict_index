@@ -1,0 +1,31 @@
+{
+  "status": "verified",
+  "snapshot_id": "37c21278-3f2b-4751-9765-eae70c58bd0d",
+  "release_id": "9927f8d45a3913eb4feb6e3af6a61681759a6f20baf9f87aa52abf84c5195abe",
+  "bundle_id": "6aad1b80bc4123c6fdd1b748e62515fb7b89151c079d83bdb45c25ca65f13b42",
+  "data_as_of": "20260921",
+  "csv_sha256": "8c4e12937302def69e7dea91e04900906a736b2afd62100e4ba3728971a57546",
+  "csv_rows": 61,
+  "preserved_predictions": 63,
+  "preserved_outcomes": 62,
+  "old_archives_unchanged": true,
+  "exact_replay_all_models": true,
+  "ledger_counts": {
+    "24a08ddd66ec46cc21322c858fc403e52b1401fb7b74e70dd700e5fd13f9a500": 1400,
+    "5e66b9cb14875be2ec600b7da3e96a8767fbdda5edb51b474569120c331770e6": 1400,
+    "956dd395b7f9df52a46bf6f739f81eb5a1b738c1180d72abfc7c741bdf6522e9": 63,
+    "9927f8d45a3913eb4feb6e3af6a61681759a6f20baf9f87aa52abf84c5195abe": 1400,
+    "d4cf60af1cf2b5eafb29061da71b775a5cc2836ae96265268621ca9d15660cef": 1400
+  },
+  "health": {
+    "status": "ok",
+    "csv_available": true,
+    "data_as_of": "20260921",
+    "expected_as_of": "20260921",
+    "snapshot_id": "37c21278-3f2b-4751-9765-eae70c58bd0d",
+    "model_release": "9927f8d45a3913eb4feb6e3af6a61681759a6f20baf9f87aa52abf84c5195abe",
+    "algorithm_id": "fixed_option_moneyflow_v1",
+    "runtime_matches": true,
+    "message": "发布数据已更新"
+  }
+}

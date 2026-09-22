@@ -16,7 +16,7 @@ sys.path.insert(0, str(ROOT))
 from prediction_service.archive import read_features
 from prediction_service.config import Settings
 from prediction_service.model_registry import prepare_bundle, ModelBundle
-from prediction_service.portfolio import publish_portfolio
+from prediction_service.portfolio import publish_portfolio, activation_features
 from prediction_service.service import PredictionService
 
 
@@ -32,9 +32,9 @@ def main():
         result = prepare_bundle(args.bundle, ROOT / "artifacts/evaluation")
         print(json.dumps({"bundle_id": result["bundle_id"], "parity": result["parity"]}), flush=True)
         return 0
-    ModelBundle(args.bundle)
+    bundle = ModelBundle(args.bundle)
     settings = replace(Settings.from_config(args.config), model_bundle_dir=args.bundle.resolve(),
-                       scheduled_refresh_hour=20, scheduled_refresh_minute=15)
+                       scheduled_refresh_hour=18, scheduled_refresh_minute=30)
     if args.data_dir:
         directory = args.data_dir.resolve()
         directory.mkdir(parents=True, exist_ok=True)
@@ -48,7 +48,8 @@ def main():
             if args.command == "activate":
                 service.refresh_calendar()
                 _, snapshot, _ = service._load_active_context()
-                result = publish_portfolio(service, read_features(snapshot.features_path), source="model_activation",
+                market = activation_features(bundle, read_features(snapshot.features_path))
+                result = publish_portfolio(service, market, source="model_activation",
                                            actor="user_requested_cli", fetch_context=args.fetch, activate=True)
             else:
                 result = service.recompute_active()

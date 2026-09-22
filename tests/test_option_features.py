@@ -60,18 +60,18 @@ def test_option_features_have_prefix_parity_and_do_not_read_current_activity():
 def test_same_day_options_require_evening_publication_and_ignore_later_sessions():
     raw, contracts, dates = inputs()
     daily = aggregate_options(raw, contracts, dates)
-    with pytest.raises(ValueError, match="20:00"):
+    with pytest.raises(ValueError, match="18:30"):
         option_features(dates[20:], daily, dates, lag_sessions=0)
-    full = option_features(dates[20:], daily, dates, lag_sessions=0, publication_hour=20)
+    full = option_features(dates[20:], daily, dates, lag_sessions=0, publication_hour=18, publication_minute=30)
     assert full.option_source_date.tolist() == list(dates[20:])
     assert full.option_put_volume_share.iloc[0] == pytest.approx(120 / 400)
-    prefix = option_features(dates[20:36], daily.iloc[:36], dates[:36], lag_sessions=0, publication_hour=20)
+    prefix = option_features(dates[20:36], daily.iloc[:36], dates[:36], lag_sessions=0, publication_hour=18, publication_minute=30)
     pd.testing.assert_frame_equal(full.iloc[:16], prefix, check_exact=True)
     daily.loc[36:, ["P_volume", "P_amount", "P_interest"]] *= 10
-    changed = option_features(dates[20:], daily, dates, lag_sessions=0, publication_hour=20)
+    changed = option_features(dates[20:], daily, dates, lag_sessions=0, publication_hour=18, publication_minute=30)
     pd.testing.assert_frame_equal(full.iloc[:16], changed.iloc[:16], check_exact=True)
     with pytest.raises(ValueError, match="same-day"):
-        option_features(dates[20:], daily.iloc[:-1], dates, lag_sessions=0, publication_hour=20)
+        option_features(dates[20:], daily.iloc[:-1], dates, lag_sessions=0, publication_hour=18, publication_minute=30)
 
 
 @pytest.mark.parametrize("problem", ["missing", "expired_only", "future_only", "duplicate", "nonfinite", "negative", "wrong_underlying", "unknown_right"])

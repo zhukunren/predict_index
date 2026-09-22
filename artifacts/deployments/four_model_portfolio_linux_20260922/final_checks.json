@@ -1,0 +1,90 @@
+{
+  "checked_at": "2026-09-22T17:00:23.636855+08:00",
+  "bundles": {
+    "four_model_portfolio_20260919": {
+      "integrity_verified": true,
+      "bundle_id": "9489b38eb6a5e7cb1ab81a4a504bd8198b2b60896fe63f28b883500825231602",
+      "seed_files": 19
+    },
+    "four_model_portfolio_linux_20260922": {
+      "integrity_verified": true,
+      "bundle_id": "6aad1b80bc4123c6fdd1b748e62515fb7b89151c079d83bdb45c25ca65f13b42",
+      "seed_files": 20
+    }
+  },
+  "permissions": {
+    "service_data": "0700",
+    "service_data/session_secret.txt": "0600",
+    "config.ini": "0600"
+  },
+  "configuration": {
+    "模型组合目录": "artifacts/releases/four_model_portfolio_linux_20260922",
+    "启用定时刷新": "是",
+    "刷新小时": "20",
+    "刷新分钟": "15"
+  },
+  "units": {
+    "predict-index.service": {
+      "MainPID": "1184512",
+      "Result": "success",
+      "NRestarts": "0",
+      "ExecMainStatus": "0",
+      "UMask": "0077",
+      "Id": "predict-index.service",
+      "ActiveState": "active",
+      "SubState": "running",
+      "ActiveEnterTimestamp": "Tue 2026-09-22 16:51:40 CST"
+    },
+    "nginx.service": {
+      "MainPID": "1026224",
+      "Result": "success",
+      "NRestarts": "0",
+      "ExecMainStatus": "0",
+      "UMask": "0022",
+      "Id": "nginx.service",
+      "ActiveState": "active",
+      "SubState": "running",
+      "ActiveEnterTimestamp": "Tue 2026-09-22 13:40:39 CST"
+    },
+    "predict-index-cert-renew.timer": {
+      "NextElapseUSecRealtime": "Wed 2026-09-23 03:26:55 CST",
+      "Result": "success",
+      "Id": "predict-index-cert-renew.timer",
+      "ActiveState": "active",
+      "SubState": "waiting",
+      "ActiveEnterTimestamp": "Tue 2026-09-22 13:43:13 CST"
+    },
+    "predict-index-cert-renew.service": {
+      "MainPID": "0",
+      "Result": "success",
+      "NRestarts": "0",
+      "ExecMainStatus": "0",
+      "UMask": "0077",
+      "Id": "predict-index-cert-renew.service",
+      "ActiveState": "inactive",
+      "SubState": "dead",
+      "ActiveEnterTimestamp": ""
+    }
+  },
+  "public_health": {
+    "status": "ok",
+    "csv_available": true,
+    "data_as_of": "20260921",
+    "expected_as_of": "20260921",
+    "snapshot_id": "37c21278-3f2b-4751-9765-eae70c58bd0d",
+    "model_release": "9927f8d45a3913eb4feb6e3af6a61681759a6f20baf9f87aa52abf84c5195abe",
+    "algorithm_id": "fixed_option_moneyflow_v1",
+    "runtime_matches": true,
+    "message": "发布数据已更新"
+  },
+  "software_tests": {
+    "tests": 459,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "research_acceptance": {
+    "deselected": 2,
+    "status": "not_run_missing_original_research_artifacts"
+  }
+}

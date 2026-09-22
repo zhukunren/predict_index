@@ -24,3 +24,6 @@ artifacts/research/
 # Legacy CLI defaults; new entry points write under artifacts/run/.
 /drp_feim_*.csv
 /tushare_validation_prediction.csv
+
+# Local Python environment
+.venv/

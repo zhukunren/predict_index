@@ -66,10 +66,11 @@ def calculate_models(market, baseline, context):
     price_probability = downside_probabilities(baseline, price_features, "downside_logistic", available=flow_mask)
 
     # The selected option experiment uses current-session activity AND positions.
+    # The service publishes after the 18:30 Shanghai data-availability cutoff.
     options = option_features(baseline.trade_date, context["options"], calendar,
-                              lag_sessions=0, publication_hour=20)
+                              lag_sessions=0, publication_hour=18, publication_minute=30)
     positions = position_features(baseline.trade_date, context["options"], calendar,
-                                 lag_sessions=0, publication_hour=20)
+                                 lag_sessions=0, publication_hour=18, publication_minute=30)
     shared_mask = flow_mask & positions.option_position_available.to_numpy()
     option_features_only = pd.concat([common, options.loc[:, OPTION_COLUMNS],
                                      positions.loc[:, POSITION_COLUMNS]], axis=1)

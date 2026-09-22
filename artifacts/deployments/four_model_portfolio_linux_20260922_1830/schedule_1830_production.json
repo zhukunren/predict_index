@@ -1,0 +1,102 @@
+{
+  "status": "verified",
+  "checked_at": "2026-09-22T17:32:14.086466+08:00",
+  "schedule_time_shanghai": "18:30",
+  "bundle_dir": "artifacts/releases/four_model_portfolio_linux_20260922_1830",
+  "bundle_id": "14044eac4323f3f5d953796c503e3f3d70d19df9f4e947f010f08d3fb71f4250",
+  "source_bundle_id": "6aad1b80bc4123c6fdd1b748e62515fb7b89151c079d83bdb45c25ca65f13b42",
+  "release_ids": {
+    "baseline": "da1c8505d8060d7cb37fe042d0308d382cc5167918a7845928208f3593911230",
+    "moneyflow": "eb3a7f7709faf5c90d00e32c95f0b4e5a72afacae4d39a31a79b1a98736c13b7",
+    "moneyflow_price": "b1f70c060effc37f4c2885600f6a60cc666dc3ece4d6c90bae09942ecdf238f1",
+    "option_moneyflow": "72bb51a239bf19caddc432ce3440a485da4c8ae454cd087b7ba3d99ae9506114"
+  },
+  "active_publication": {
+    "snapshot_id": "71a78f92-7d9c-4c9b-854c-90e642c592bd",
+    "release_id": "72bb51a239bf19caddc432ce3440a485da4c8ae454cd087b7ba3d99ae9506114",
+    "csv_sha256": "0597b27ebb0a4aedde25faf978cbab70055dad174ba17273e80d2a17148e36a0",
+    "rows": 61
+  },
+  "latest_snapshot": {
+    "id": "71a78f92-7d9c-4c9b-854c-90e642c592bd",
+    "data_as_of": "20260921",
+    "source": "model_activation"
+  },
+  "health": {
+    "status": "ok",
+    "csv_available": true,
+    "data_as_of": "20260921",
+    "expected_as_of": "20260921",
+    "snapshot_id": "71a78f92-7d9c-4c9b-854c-90e642c592bd",
+    "model_release": "72bb51a239bf19caddc432ce3440a485da4c8ae454cd087b7ba3d99ae9506114",
+    "algorithm_id": "fixed_option_moneyflow_v1",
+    "runtime_matches": true,
+    "message": "发布数据已更新"
+  },
+  "release_counts": {
+    "24a08ddd66ec46cc21322c858fc403e52b1401fb7b74e70dd700e5fd13f9a500": 1400,
+    "5e66b9cb14875be2ec600b7da3e96a8767fbdda5edb51b474569120c331770e6": 1400,
+    "72bb51a239bf19caddc432ce3440a485da4c8ae454cd087b7ba3d99ae9506114": 1400,
+    "956dd395b7f9df52a46bf6f739f81eb5a1b738c1180d72abfc7c741bdf6522e9": 63,
+    "9927f8d45a3913eb4feb6e3af6a61681759a6f20baf9f87aa52abf84c5195abe": 1400,
+    "b1f70c060effc37f4c2885600f6a60cc666dc3ece4d6c90bae09942ecdf238f1": 1400,
+    "d4cf60af1cf2b5eafb29061da71b775a5cc2836ae96265268621ca9d15660cef": 1400,
+    "da1c8505d8060d7cb37fe042d0308d382cc5167918a7845928208f3593911230": 1400,
+    "eb3a7f7709faf5c90d00e32c95f0b4e5a72afacae4d39a31a79b1a98736c13b7": 1400
+  },
+  "outcome_count": 11254,
+  "service": {
+    "MainPID": "1215505",
+    "Result": "success",
+    "NRestarts": "0",
+    "ExecMainStatus": "0",
+    "UMask": "0077",
+    "Id": "predict-index.service",
+    "ActiveState": "active",
+    "SubState": "running",
+    "ActiveEnterTimestamp": "Tue 2026-09-22 17:22:20 CST"
+  },
+  "permissions": {
+    "config.ini": "0600",
+    "service_data": "0700",
+    "service_data/session_secret.txt": "0600"
+  },
+  "software_tests": {
+    "passed": 459,
+    "deselected": 2,
+    "warnings": 35
+  },
+  "backup": "service_data/backups/before_schedule_change_20260922T1720",
+  "independent_bundle_replay": {
+    "status": "verified",
+    "bundle_id": "14044eac4323f3f5d953796c503e3f3d70d19df9f4e947f010f08d3fb71f4250",
+    "schedule_time_shanghai": "18:30",
+    "runtime_publication_hour": 18,
+    "runtime_publication_minute": 30,
+    "forecast_fields_unchanged": true,
+    "independent_replay": {
+      "option_moneyflow": {
+        "rows": 1400,
+        "exact_match": true
+      },
+      "baseline": {
+        "rows": 1400,
+        "exact_match": true
+      },
+      "moneyflow": {
+        "rows": 1400,
+        "exact_match": true
+      },
+      "moneyflow_price": {
+        "rows": 1400,
+        "exact_match": true
+      }
+    },
+    "release_ids": {
+      "baseline": "da1c8505d8060d7cb37fe042d0308d382cc5167918a7845928208f3593911230",
+      "moneyflow": "eb3a7f7709faf5c90d00e32c95f0b4e5a72afacae4d39a31a79b1a98736c13b7",
+      "moneyflow_price": "b1f70c060effc37f4c2885600f6a60cc666dc3ece4d6c90bae09942ecdf238f1",
+      "option_moneyflow": "72bb51a239bf19caddc432ce3440a485da4c8ae454cd087b7ba3d99ae9506114"
+    }
+  }
+}

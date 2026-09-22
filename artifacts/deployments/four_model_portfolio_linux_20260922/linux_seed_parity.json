@@ -1,0 +1,134 @@
+{
+  "baseline": {
+    "trade_date": {
+      "exact": true
+    },
+    "predicted_label": {
+      "exact": true
+    },
+    "predicted_pct_change": {
+      "max_abs": 0.0,
+      "mismatched": 0,
+      "within_1e12": true
+    },
+    "predicted_close": {
+      "max_abs": 0.0,
+      "mismatched": 0,
+      "within_1e12": true
+    },
+    "confidence": {
+      "max_abs": 0.0,
+      "mismatched": 0,
+      "within_1e12": true
+    },
+    "calibrated_confidence": {
+      "max_abs": 1.4432899320127035e-15,
+      "mismatched": 198,
+      "within_1e12": true
+    },
+    "return_calibration_scale": {
+      "max_abs": 0.0,
+      "mismatched": 0,
+      "within_1e12": true
+    }
+  },
+  "moneyflow": {
+    "trade_date": {
+      "exact": true
+    },
+    "predicted_label": {
+      "exact": true
+    },
+    "predicted_pct_change": {
+      "max_abs": 0.0,
+      "mismatched": 0,
+      "within_1e12": true
+    },
+    "predicted_close": {
+      "max_abs": 0.0,
+      "mismatched": 0,
+      "within_1e12": true
+    },
+    "confidence": {
+      "max_abs": 2.7533531010703882e-14,
+      "mismatched": 65,
+      "within_1e12": true
+    },
+    "calibrated_confidence": {
+      "max_abs": 2.886579864025407e-15,
+      "mismatched": 430,
+      "within_1e12": true
+    },
+    "return_calibration_scale": {
+      "max_abs": 0.0,
+      "mismatched": 0,
+      "within_1e12": true
+    }
+  },
+  "moneyflow_price": {
+    "trade_date": {
+      "exact": true
+    },
+    "predicted_label": {
+      "exact": true
+    },
+    "predicted_pct_change": {
+      "max_abs": 0.0,
+      "mismatched": 0,
+      "within_1e12": true
+    },
+    "predicted_close": {
+      "max_abs": 0.0,
+      "mismatched": 0,
+      "within_1e12": true
+    },
+    "confidence": {
+      "max_abs": 9.314771176605063e-14,
+      "mismatched": 140,
+      "within_1e12": true
+    },
+    "calibrated_confidence": {
+      "max_abs": 5.773159728050814e-15,
+      "mismatched": 923,
+      "within_1e12": true
+    },
+    "return_calibration_scale": {
+      "max_abs": 0.0,
+      "mismatched": 0,
+      "within_1e12": true
+    }
+  },
+  "option_moneyflow": {
+    "trade_date": {
+      "exact": true
+    },
+    "predicted_label": {
+      "exact": true
+    },
+    "predicted_pct_change": {
+      "max_abs": 0.0,
+      "mismatched": 0,
+      "within_1e12": true
+    },
+    "predicted_close": {
+      "max_abs": 0.0,
+      "mismatched": 0,
+      "within_1e12": true
+    },
+    "confidence": {
+      "max_abs": 1.1590728377086634e-13,
+      "mismatched": 139,
+      "within_1e12": true
+    },
+    "calibrated_confidence": {
+      "max_abs": 3.3306690738754696e-15,
+      "mismatched": 807,
+      "within_1e12": true
+    },
+    "return_calibration_scale": {
+      "max_abs": 0.0,
+      "mismatched": 0,
+      "within_1e12": true
+    }
+  }
+}
