@@ -241,7 +241,6 @@ def create_app(
             payload, ensure_ascii=False, separators=(",", ":"), allow_nan=False
         ).encode("utf-8")
         headers = {
-            "Content-Disposition": 'attachment; filename="sh000001_latest.json"',
             "ETag": f'"{sha256_bytes(content)}"',
             "X-Snapshot-Id": artifact.snapshot_id,
             "X-Model-Release": artifact.release_id,

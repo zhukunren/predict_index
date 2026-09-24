@@ -4,7 +4,7 @@
 <header class="page-heading">
   <div><div class="breadcrumb">市场预测 <span>/</span> {{ {'overview':'运行概览','history':'历史明细','jobs':'运行任务','research':'研究对照'}[view] }}</div><h1>{{ '上证指数' if view == 'overview' else {'history':'历史明细','jobs':'运行任务','research':'研究对照'}[view] }} <span class="symbol">SH000001</span></h1></div>
   <div class="toolbar-actions">
-    <a class="button secondary" href="/api/v1/sh000001/latest.json"><i data-lucide="download"></i>下载 JSON</a>
+    <a class="button secondary" href="/api/v1/sh000001/latest.json"><i data-lucide="file-json"></i>查看 JSON</a>
     <form method="post" action="/admin/refresh" data-submit-job><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button primary" {% if active_jobs %}disabled{% endif %}><i data-lucide="refresh-cw"></i>{{ '刷新中' if active_jobs else '刷新预测' }}</button></form>
   </div>
 </header>

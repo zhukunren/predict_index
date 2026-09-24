@@ -31,6 +31,8 @@ def main():
         page.on("pageerror", lambda error: errors.append(str(error)))
         public = context.request.get(args.url + "/api/v1/sh000001/latest.json")
         assert public.status == 200
+        assert public.headers["content-type"].startswith("application/json")
+        assert "content-disposition" not in public.headers
         public_payload = public.json()
         assert public_payload["code"] == 0 and public_payload["status"] == 200
         assert public_payload["data"]["msg"] == "success"

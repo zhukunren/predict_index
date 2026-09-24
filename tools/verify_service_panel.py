@@ -37,6 +37,8 @@ def main() -> None:
         page.wait_for_function("window.Chart && Chart.getChart(document.getElementById('returns-chart'))")
         initial_json = context.request.get(args.url + "/api/v1/sh000001/latest.json")
         assert initial_json.status == 200
+        assert initial_json.headers["content-type"].startswith("application/json")
+        assert "content-disposition" not in initial_json.headers
         public_payload = initial_json.json()
         assert public_payload["code"] == 0 and public_payload["status"] == 200
         assert public_payload["data"]["msg"] == "success"

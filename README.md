@@ -123,7 +123,7 @@ python -m scripts.run_service
 - 健康检查：`/healthz`
 - 进程存活：`/livez`；公开数据状态：`/api/v1/sh000001/status`
 
-管理员密码只在首次创建本地管理员账号时读取，数据库中仅保存 Argon2 哈希。公开 JSON 成功响应采用 `{ "code": 0, "data": { "msg": "success", "items": [...] }, "status": 200 }` 结构；每条记录仅包含 `signal_date`、`predicted_next_day_return`、`predicted_direction`、`predicted_next_day_close`、`confidence`、`actual_next_day_return`、`direction_prediction_correct`，其中 `predicted_direction` 为 `up` 或 `down`。日期为 `YYYYMMDD` 整数；涨跌幅与置信度为小数比例；未结算的实际涨跌幅和正确性为 `null`。接口支持 `GET`、`HEAD`、`ETag / If-None-Match` 和 `304`，访问时不会运行预测或请求行情；旧 `/api/v1/sh000001/latest.csv` 地址也返回相同 JSON。归档完整性校验失败时返回 `503`；新发布仍须通过历史账本的一致性检查。
+管理员密码只在首次创建本地管理员账号时读取，数据库中仅保存 Argon2 哈希。公开 JSON 接口直接返回 `application/json` 响应体，成功响应采用 `{ "code": 0, "data": { "msg": "success", "items": [...] }, "status": 200 }` 结构；每条记录仅包含 `signal_date`、`predicted_next_day_return`、`predicted_direction`、`predicted_next_day_close`、`confidence`、`actual_next_day_return`、`direction_prediction_correct`，其中 `predicted_direction` 为 `up` 或 `down`。日期为 `YYYYMMDD` 整数；涨跌幅与置信度为小数比例；未结算的实际涨跌幅和正确性为 `null`。接口支持 `GET`、`HEAD`、`ETag / If-None-Match` 和 `304`，访问时不会运行预测或请求行情；旧 `/api/v1/sh000001/latest.csv` 地址也返回相同 JSON。归档完整性校验失败时返回 `503`；新发布仍须通过历史账本的一致性检查。
 
 面板分为预测概览、历史明细、运行任务、快照归档和研究对照。概览与明细支持近 5、20、60 个交易日及自定义 1 至 5000 日统计，选择保存在登录会话中。统计读取当前模型账本内截至该发布日的已结算历史，不受 CSV 的 60 日导出窗口限制；样本不足时显示实际可用数量。待结算预测不计入统计。平衡准确率按实际上涨/下跌的召回率平均计算，只有单一实际方向时显示为空。
 
