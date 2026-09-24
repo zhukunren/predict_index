@@ -240,8 +240,10 @@ def create_app(
         content = json.dumps(
             payload, ensure_ascii=False, separators=(",", ":"), allow_nan=False
         ).encode("utf-8")
+        etag = sha256_bytes(b"inline-json-v1\0" + content)
         headers = {
-            "ETag": f'"{sha256_bytes(content)}"',
+            "Content-Disposition": "inline",
+            "ETag": f'"{etag}"',
             "X-Snapshot-Id": artifact.snapshot_id,
             "X-Model-Release": artifact.release_id,
             "X-Data-As-Of": artifact.data_as_of,
