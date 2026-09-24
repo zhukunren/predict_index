@@ -35,7 +35,7 @@ def main() -> None:
         page.goto(args.url + "/admin/?days=60")
         page.locator("#returns-chart").wait_for()
         page.wait_for_function("window.Chart && Chart.getChart(document.getElementById('returns-chart'))")
-        initial_json = context.request.get(args.url + "/api/v1/sh000001/latest.json")
+        initial_json = context.request.get(args.url + "/api/v1/sh000001/latest")
         assert initial_json.status == 200
         assert initial_json.headers["content-type"].startswith("application/json")
         assert initial_json.headers["content-disposition"] == "inline"
@@ -53,7 +53,7 @@ def main() -> None:
         assert all(row["predicted_direction"] in {"up", "down"} for row in public_rows)
         assert page.locator("[data-direction-diagnostics], [data-direction-alert]").count() == 0
         etag = initial_json.headers["etag"]
-        assert context.request.get(args.url + "/api/v1/sh000001/latest.json", headers={"If-None-Match": etag}).status == 304
+        assert context.request.get(args.url + "/api/v1/sh000001/latest", headers={"If-None-Match": etag}).status == 304
         for width, height, label in [(1440, 1000, "desktop"), (390, 844, "mobile"), (320, 800, "small-mobile")]:
             page.set_viewport_size({"width": width, "height": height})
             page.wait_for_timeout(300)
@@ -93,7 +93,7 @@ def main() -> None:
                 page.set_viewport_size({"width": 1440, "height": 1000})
         page.goto(args.url + "/admin/archives")
         assert page.locator("tbody tr").count() >= 1
-        after = context.request.get(args.url + "/api/v1/sh000001/latest.json")
+        after = context.request.get(args.url + "/api/v1/sh000001/latest")
         assert after.headers["etag"] == etag and after.body() == initial_json.body()
         page.set_viewport_size({"width": 390, "height": 844})
         page.locator(".mobile-account").get_by_role("button", name="退出登录").click()

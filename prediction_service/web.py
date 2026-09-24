@@ -215,7 +215,8 @@ def create_app(
     async def invalid_archive(_request, exc):
         return JSONResponse({"detail": str(exc)}, status_code=503)
 
-    @app.api_route("/api/v1/sh000001/latest.json", methods=["GET", "HEAD"])
+    @app.api_route("/api/v1/sh000001/latest", methods=["GET", "HEAD"])
+    @app.api_route("/api/v1/sh000001/latest.json", methods=["GET", "HEAD"], include_in_schema=False)
     @app.api_route("/api/v1/sh000001/latest.csv", methods=["GET", "HEAD"], include_in_schema=False)
     def latest_json(request: Request) -> Response:
         try:

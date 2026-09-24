@@ -29,7 +29,7 @@ def main():
         context = browser.new_context(viewport={"width": 1440, "height": 1040})
         page = context.new_page()
         page.on("pageerror", lambda error: errors.append(str(error)))
-        public = context.request.get(args.url + "/api/v1/sh000001/latest.json")
+        public = context.request.get(args.url + "/api/v1/sh000001/latest")
         assert public.status == 200
         assert public.headers["content-type"].startswith("application/json")
         assert public.headers["content-disposition"] == "inline"
@@ -93,7 +93,7 @@ def main():
             assert len(rows) == 61 and set(rows["模型版本"]) == {model["release_id"]}
         page.goto(args.url + "/admin/")
         assert "期权＋资金流组合" in page.locator(".active-model-line").text_content()
-        after = context.request.get(args.url + "/api/v1/sh000001/latest.json")
+        after = context.request.get(args.url + "/api/v1/sh000001/latest")
         assert public.body() == after.body()
         assert not errors, errors
         checks.update(custom_days=17, comparison_export_rows=17, production_release=public.headers["x-model-release"],
