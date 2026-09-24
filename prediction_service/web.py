@@ -46,6 +46,7 @@ PUBLIC_JSON_FIELDS = {
     "actual_next_day_return": "次日实际涨跌幅",
     "direction_prediction_correct": "方向预测正确",
 }
+PUBLIC_DIRECTION_VALUES = {"上涨": "up", "下跌": "down"}
 
 
 class AppContainer:
@@ -227,6 +228,10 @@ def create_app(
             {field: record[source] for field, source in PUBLIC_JSON_FIELDS.items()}
             for record in source_records
         ]
+        for record in records:
+            record["predicted_direction"] = PUBLIC_DIRECTION_VALUES[
+                record["predicted_direction"]
+            ]
         payload = {
             "code": 0,
             "data": {"msg": "success", "items": records},

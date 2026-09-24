@@ -48,6 +48,7 @@ def main() -> None:
         ]
         assert len(public_rows) == 61
         assert all(list(row) == public_fields for row in public_rows)
+        assert all(row["predicted_direction"] in {"up", "down"} for row in public_rows)
         assert page.locator("[data-direction-diagnostics], [data-direction-alert]").count() == 0
         etag = initial_json.headers["etag"]
         assert context.request.get(args.url + "/api/v1/sh000001/latest.json", headers={"If-None-Match": etag}).status == 304

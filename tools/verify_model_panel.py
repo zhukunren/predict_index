@@ -42,6 +42,7 @@ def main():
         ]
         assert len(public_rows) == 61
         assert all(list(row) == public_fields for row in public_rows)
+        assert all(row["predicted_direction"] in {"up", "down"} for row in public_rows)
         page.goto(args.url + "/admin/models")
         assert "/admin/login" in page.url
         page.get_by_label("账号", exact=True).fill(config.get("管理员", "账号"))
