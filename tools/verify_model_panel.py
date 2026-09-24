@@ -31,7 +31,10 @@ def main():
         page.on("pageerror", lambda error: errors.append(str(error)))
         public = context.request.get(args.url + "/api/v1/sh000001/latest.json")
         assert public.status == 200
-        public_rows = public.json()
+        public_payload = public.json()
+        assert public_payload["code"] == 0 and public_payload["status"] == 200
+        assert public_payload["data"]["msg"] == "success"
+        public_rows = public_payload["data"]["items"]
         public_fields = [
             "signal_date", "predicted_next_day_return", "predicted_direction",
             "predicted_next_day_close", "confidence", "actual_next_day_return",

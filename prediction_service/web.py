@@ -227,8 +227,13 @@ def create_app(
             {field: record[source] for field, source in PUBLIC_JSON_FIELDS.items()}
             for record in source_records
         ]
+        payload = {
+            "code": 0,
+            "data": {"msg": "success", "items": records},
+            "status": 200,
+        }
         content = json.dumps(
-            records, ensure_ascii=False, separators=(",", ":"), allow_nan=False
+            payload, ensure_ascii=False, separators=(",", ":"), allow_nan=False
         ).encode("utf-8")
         headers = {
             "Content-Disposition": 'attachment; filename="sh000001_latest.json"',

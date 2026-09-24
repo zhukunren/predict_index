@@ -37,7 +37,10 @@ def main() -> None:
         page.wait_for_function("window.Chart && Chart.getChart(document.getElementById('returns-chart'))")
         initial_json = context.request.get(args.url + "/api/v1/sh000001/latest.json")
         assert initial_json.status == 200
-        public_rows = initial_json.json()
+        public_payload = initial_json.json()
+        assert public_payload["code"] == 0 and public_payload["status"] == 200
+        assert public_payload["data"]["msg"] == "success"
+        public_rows = public_payload["data"]["items"]
         public_fields = [
             "signal_date", "predicted_next_day_return", "predicted_direction",
             "predicted_next_day_close", "confidence", "actual_next_day_return",
