@@ -33,8 +33,9 @@ def main():
         assert public.status == 200
         public_rows = public.json()
         public_fields = [
-            "信号日期", "预测次日涨跌幅", "预测方向", "预测次日收盘价",
-            "置信度", "次日实际涨跌幅", "方向预测正确",
+            "signal_date", "predicted_next_day_return", "predicted_direction",
+            "predicted_next_day_close", "confidence", "actual_next_day_return",
+            "direction_prediction_correct",
         ]
         assert len(public_rows) == 61
         assert all(list(row) == public_fields for row in public_rows)

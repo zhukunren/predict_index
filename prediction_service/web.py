@@ -37,15 +37,15 @@ from .service import (
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 TEMPLATES = Jinja2Templates(directory=str(PACKAGE_DIR / "templates"))
-PUBLIC_JSON_FIELDS = (
-    "信号日期",
-    "预测次日涨跌幅",
-    "预测方向",
-    "预测次日收盘价",
-    "置信度",
-    "次日实际涨跌幅",
-    "方向预测正确",
-)
+PUBLIC_JSON_FIELDS = {
+    "signal_date": "信号日期",
+    "predicted_next_day_return": "预测次日涨跌幅",
+    "predicted_direction": "预测方向",
+    "predicted_next_day_close": "预测次日收盘价",
+    "confidence": "置信度",
+    "actual_next_day_return": "次日实际涨跌幅",
+    "direction_prediction_correct": "方向预测正确",
+}
 
 
 class AppContainer:
@@ -221,7 +221,12 @@ def create_app(
             artifact = container.service.read_published()
         except (ServiceNotReadyError, ModelReleaseMismatchError, PredictionDriftError) as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
-        records = clean_records(artifact.public_frame.loc[:, list(PUBLIC_JSON_FIELDS)])
+        source_fields = list(PUBLIC_JSON_FIELDS.values())
+        source_records = clean_records(artifact.public_frame.loc[:, source_fields])
+        records = [
+            {field: record[source] for field, source in PUBLIC_JSON_FIELDS.items()}
+            for record in source_records
+        ]
         content = json.dumps(
             records, ensure_ascii=False, separators=(",", ":"), allow_nan=False
         ).encode("utf-8")
