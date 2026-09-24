@@ -35,11 +35,18 @@ def main() -> None:
         page.goto(args.url + "/admin/?days=60")
         page.locator("#returns-chart").wait_for()
         page.wait_for_function("window.Chart && Chart.getChart(document.getElementById('returns-chart'))")
-        initial_csv = context.request.get(args.url + "/api/v1/sh000001/latest.csv")
-        assert initial_csv.status == 200
+        initial_json = context.request.get(args.url + "/api/v1/sh000001/latest.json")
+        assert initial_json.status == 200
+        public_rows = initial_json.json()
+        public_fields = [
+            "信号日期", "预测次日涨跌幅", "预测方向", "预测次日收盘价",
+            "置信度", "次日实际涨跌幅", "方向预测正确",
+        ]
+        assert len(public_rows) == 61
+        assert all(list(row) == public_fields for row in public_rows)
         assert page.locator("[data-direction-diagnostics], [data-direction-alert]").count() == 0
-        etag = initial_csv.headers["etag"]
-        assert context.request.get(args.url + "/api/v1/sh000001/latest.csv", headers={"If-None-Match": etag}).status == 304
+        etag = initial_json.headers["etag"]
+        assert context.request.get(args.url + "/api/v1/sh000001/latest.json", headers={"If-None-Match": etag}).status == 304
         for width, height, label in [(1440, 1000, "desktop"), (390, 844, "mobile"), (320, 800, "small-mobile")]:
             page.set_viewport_size({"width": width, "height": height})
             page.wait_for_timeout(300)
@@ -79,15 +86,15 @@ def main() -> None:
                 page.set_viewport_size({"width": 1440, "height": 1000})
         page.goto(args.url + "/admin/archives")
         assert page.locator("tbody tr").count() >= 1
-        after = context.request.get(args.url + "/api/v1/sh000001/latest.csv")
-        assert after.headers["etag"] == etag and after.body() == initial_csv.body()
+        after = context.request.get(args.url + "/api/v1/sh000001/latest.json")
+        assert after.headers["etag"] == etag and after.body() == initial_json.body()
         page.set_viewport_size({"width": 390, "height": 844})
         page.locator(".mobile-account").get_by_role("button", name="退出登录").click()
         page.wait_for_url(re.compile(r"/admin/login$"))
         assert not errors, errors
         checks["custom_days"] = 17
         checks["direction_diagnostics_removed"] = True
-        checks["csv_unchanged"] = True
+        checks["json_unchanged"] = True
         checks["page_errors"] = errors
         browser.close()
     (args.output / "checks.json").write_text(json.dumps(checks, ensure_ascii=False, indent=2), encoding="utf-8")

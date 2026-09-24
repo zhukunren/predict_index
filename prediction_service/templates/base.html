@@ -25,7 +25,7 @@
       <a href="/admin/?view=research" class="{{ 'active' if view|default('') == 'research' else '' }}"><i data-lucide="flask-conical"></i>研究对照</a>
     </nav>
     <div class="sidebar-bottom">
-      <a class="api-link" href="/api/v1/sh000001/latest.csv"><i data-lucide="file-down"></i><span>公开 CSV<small>SH000001 · latest</small></span><i data-lucide="arrow-up-right"></i></a>
+      <a class="api-link" href="/api/v1/sh000001/latest.json"><i data-lucide="file-json"></i><span>公开 JSON<small>SH000001 · latest</small></span><i data-lucide="arrow-up-right"></i></a>
       <div class="account"><span class="avatar"><i data-lucide="user-round"></i></span><span>{{ admin_username }}<small>管理员</small></span><form method="post" action="/admin/logout"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="icon-button" title="退出登录" aria-label="退出登录"><i data-lucide="log-out"></i></button></form></div>
     </div>
   </aside>

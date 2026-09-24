@@ -99,7 +99,7 @@ document
   .querySelector("[data-copy-api]")
   ?.addEventListener("click", async () => {
     const address = new URL(
-      "/api/v1/sh000001/latest.csv",
+      "/api/v1/sh000001/latest.json",
       window.location.origin,
     ).href;
     try {

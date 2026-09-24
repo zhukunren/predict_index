@@ -41,7 +41,7 @@ Linux 部署使用 `artifacts/releases/four_model_portfolio_linux_20260922/`。�
 
 统计窗口以生产模型最近的目标交易日为准，只比较四个模型均有记录的日期。缺失日期单独提示，不使用更早日期补足。`仅事前预测` 要求四个模型的记录均在目标日开盘前生成；历史回放不计入，样本为零时显示等待结算，不用回测成绩填充。
 
-- 公开 CSV：`GET /api/v1/sh000001/latest.csv`，60 个已结算交易日＋下一交易日，原列结构与缓存协议保留。
+- 公开 JSON：`GET /api/v1/sh000001/latest.json`，最多 60 个已结算交易日＋下一交易日，仅返回指定的七个预测与结算字段；旧 `/api/v1/sh000001/latest.csv` 地址兼容返回相同 JSON。
 - 管理员对比数据：`GET /admin/api/models?days=60&sample=all`。
 - 管理员对比 CSV：`GET /admin/models/comparison.csv?days=60&sample=all`。
 - 管理员各模型 CSV：`GET /admin/models/{model_key}/latest.csv`。

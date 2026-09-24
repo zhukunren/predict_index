@@ -1,7 +1,8 @@
-"""FastAPI application exposing public CSV data and a password-protected panel."""
+"""FastAPI application exposing public prediction data and a protected panel."""
 
 from __future__ import annotations
 
+import json
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,8 +19,8 @@ from sqlalchemy import select
 
 from .config import Settings
 from .calendar import SHANGHAI
-from .metrics import finite
-from .archive import frame_to_csv_bytes
+from .metrics import clean_records, finite
+from .archive import frame_to_csv_bytes, sha256_bytes
 from .model_comparison import comparison_data, comparison_frame, model_csv
 from .models import RefreshJob
 from .scheduler import DailyRefreshScheduler
@@ -36,6 +37,15 @@ from .service import (
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 TEMPLATES = Jinja2Templates(directory=str(PACKAGE_DIR / "templates"))
+PUBLIC_JSON_FIELDS = (
+    "信号日期",
+    "预测次日涨跌幅",
+    "预测方向",
+    "预测次日收盘价",
+    "置信度",
+    "次日实际涨跌幅",
+    "方向预测正确",
+)
 
 
 class AppContainer:
@@ -204,15 +214,20 @@ def create_app(
     async def invalid_archive(_request, exc):
         return JSONResponse({"detail": str(exc)}, status_code=503)
 
-    @app.api_route("/api/v1/sh000001/latest.csv", methods=["GET", "HEAD"])
-    def latest_csv(request: Request) -> Response:
+    @app.api_route("/api/v1/sh000001/latest.json", methods=["GET", "HEAD"])
+    @app.api_route("/api/v1/sh000001/latest.csv", methods=["GET", "HEAD"], include_in_schema=False)
+    def latest_json(request: Request) -> Response:
         try:
             artifact = container.service.read_published()
         except (ServiceNotReadyError, ModelReleaseMismatchError, PredictionDriftError) as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
+        records = clean_records(artifact.public_frame.loc[:, list(PUBLIC_JSON_FIELDS)])
+        content = json.dumps(
+            records, ensure_ascii=False, separators=(",", ":"), allow_nan=False
+        ).encode("utf-8")
         headers = {
-            "Content-Disposition": 'attachment; filename="sh000001_latest.csv"',
-            "ETag": f'"{artifact.csv_sha256}"',
+            "Content-Disposition": 'attachment; filename="sh000001_latest.json"',
+            "ETag": f'"{sha256_bytes(content)}"',
             "X-Snapshot-Id": artifact.snapshot_id,
             "X-Model-Release": artifact.release_id,
             "X-Data-As-Of": artifact.data_as_of,
@@ -222,11 +237,11 @@ def create_app(
         if any(tag.strip().removeprefix("W/") in {headers["ETag"], "*"} for tag in supplied.split(",")):
             return Response(status_code=304, headers=headers)
         if request.method == "HEAD":
-            headers["Content-Length"] = str(len(artifact.csv_bytes))
-            return Response(headers=headers, media_type="text/csv; charset=utf-8")
+            headers["Content-Length"] = str(len(content))
+            return Response(headers=headers, media_type="application/json")
         return Response(
-            content=artifact.csv_bytes,
-            media_type="text/csv; charset=utf-8",
+            content=content,
+            media_type="application/json",
             headers=headers,
         )
 

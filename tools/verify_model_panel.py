@@ -29,9 +29,15 @@ def main():
         context = browser.new_context(viewport={"width": 1440, "height": 1040})
         page = context.new_page()
         page.on("pageerror", lambda error: errors.append(str(error)))
-        public = context.request.get(args.url + "/api/v1/sh000001/latest.csv")
+        public = context.request.get(args.url + "/api/v1/sh000001/latest.json")
         assert public.status == 200
-        assert len(pd.read_csv(io.BytesIO(public.body()), encoding="utf-8-sig")) == 61
+        public_rows = public.json()
+        public_fields = [
+            "信号日期", "预测次日涨跌幅", "预测方向", "预测次日收盘价",
+            "置信度", "次日实际涨跌幅", "方向预测正确",
+        ]
+        assert len(public_rows) == 61
+        assert all(list(row) == public_fields for row in public_rows)
         page.goto(args.url + "/admin/models")
         assert "/admin/login" in page.url
         page.get_by_label("账号", exact=True).fill(config.get("管理员", "账号"))
@@ -80,11 +86,11 @@ def main():
             assert len(rows) == 61 and set(rows["模型版本"]) == {model["release_id"]}
         page.goto(args.url + "/admin/")
         assert "期权＋资金流组合" in page.locator(".active-model-line").text_content()
-        after = context.request.get(args.url + "/api/v1/sh000001/latest.csv")
+        after = context.request.get(args.url + "/api/v1/sh000001/latest.json")
         assert public.body() == after.body()
         assert not errors, errors
         checks.update(custom_days=17, comparison_export_rows=17, production_release=public.headers["x-model-release"],
-                      csv_rows=61, csv_sha256=hashlib.sha256(public.body()).hexdigest(),
+                      public_rows=61, json_sha256=hashlib.sha256(public.body()).hexdigest(),
                       shared_dates=60, models=4, prospective_empty=True, page_errors=errors)
         browser.close()
     (args.output / "checks.json").write_text(json.dumps(checks, ensure_ascii=False, indent=2), encoding="utf-8")
