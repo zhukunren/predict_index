@@ -259,7 +259,15 @@ def test_prediction_rows_cannot_be_updated_or_deleted(tmp_path: Path):
             row.predicted_return = 0.9
 
 
-def test_public_csv_is_unauthenticated_and_admin_uses_password(tmp_path: Path):
+def _public_items(artifact):
+    from prediction_service.metrics import clean_records
+    from prediction_service.web import PUBLIC_JSON_FIELDS
+    records = clean_records(artifact.public_frame.loc[:, list(PUBLIC_JSON_FIELDS.values())])
+    return [{key: ("up" if row[source] == "上涨" else "down") if key == "predicted_direction" else row[source]
+             for key, source in PUBLIC_JSON_FIELDS.items()} for row in records]
+
+
+def test_public_json_is_unauthenticated_and_admin_uses_password(tmp_path: Path):
     service = _service(tmp_path)
     service.publish_from_features(_features(), source="test", raw_frames=None, actor="tester")
     app = create_app(service.settings, service=service, bootstrap=False)
@@ -267,7 +275,8 @@ def test_public_csv_is_unauthenticated_and_admin_uses_password(tmp_path: Path):
     with TestClient(app) as client:
         public = client.get("/api/v1/sh000001/latest.csv")
         assert public.status_code == 200
-        assert public.content.startswith(b"\xef\xbb\xbf")
+        assert public.headers["content-type"].startswith("application/json")
+        assert public.json()["code"] == 0 and public.json()["data"]["items"]
         assert public.headers["x-snapshot-id"]
 
         denied = client.get("/admin/", follow_redirects=False)
@@ -315,7 +324,8 @@ def test_public_api_keeps_verified_publication_when_recalculation_drifts(tmp_pat
     with TestClient(app) as client:
         response = client.get("/api/v1/sh000001/latest.csv")
     assert response.status_code == 200
-    assert response.content == published.csv_bytes
+    assert response.json()["data"]["items"] == _public_items(published)
+    assert response.headers["x-snapshot-id"] == published.snapshot_id
 
 
 def test_archive_feature_hash_mismatch_fails_closed(tmp_path: Path):

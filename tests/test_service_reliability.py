@@ -20,7 +20,7 @@ from sqlalchemy import select
 from prediction_service.service import PredictionService, RefreshManager
 from prediction_service.scheduler import DailyRefreshScheduler
 from prediction_service.web import create_app
-from test_prediction_service import _service, _features, _fake_calculation
+from test_prediction_service import _service, _features, _fake_calculation, _public_items
 
 
 def login(client):
@@ -95,12 +95,12 @@ def test_public_download_never_computes_and_supports_conditional_get(tmp_path, m
     service.settings = replace(service.settings, signal_engine="volatility_rule")
     with TestClient(create_app(service.settings, service=service, bootstrap=False)) as client:
         result = client.get("/api/v1/sh000001/latest.csv")
-        assert result.status_code == 200 and result.content == artifact.csv_bytes
+        assert result.status_code == 200 and result.json()["data"]["items"] == _public_items(artifact)
         conditional = client.get("/api/v1/sh000001/latest.csv", headers={"If-None-Match": "W/" + result.headers["etag"]})
         assert conditional.status_code == 304 and not conditional.content
         head = client.head("/api/v1/sh000001/latest.csv")
         assert head.status_code == 200 and not head.content
-        assert int(head.headers["content-length"]) == len(artifact.csv_bytes)
+        assert int(head.headers["content-length"]) == len(result.content)
         artifact.archive.results_path.write_bytes(b"corrupt")
         assert client.get("/api/v1/sh000001/latest.csv", headers={"If-None-Match": result.headers["etag"]}).status_code == 503
         health = client.get("/healthz")
@@ -143,7 +143,7 @@ def test_custom_window_uses_ledger_and_persists_without_changing_csv(tmp_path):
         assert "+nan%" not in page.text
         assert client.get("/admin/?days=0").status_code == 422
         assert client.get("/admin/?days=5001").status_code == 422
-        assert client.get("/api/v1/sh000001/latest.csv").content == artifact.csv_bytes
+        assert client.get("/api/v1/sh000001/latest.csv").json()["data"]["items"] == _public_items(artifact)
 
 
 def test_calendar_handles_holidays_freshness_and_missing_coverage(tmp_path):

@@ -1,0 +1,29 @@
+{
+  "job_id": "c7a0dd23-6935-4d41-bcc1-9acf919cdebf",
+  "job_status": "succeeded",
+  "message": "刷新完成并通过历史预测校验。",
+  "refresh_seconds": 45.11,
+  "before_data_as_of": "20261104",
+  "after_data_as_of": "20261106",
+  "snapshot_id": "eda2df14-b242-4bd2-ac27-b841beb3ae32",
+  "release_preserved": true,
+  "health": {
+    "status": "ok",
+    "csv_available": true,
+    "data_as_of": "20261106",
+    "expected_as_of": "20261106",
+    "snapshot_id": "eda2df14-b242-4bd2-ac27-b841beb3ae32",
+    "model_release": "72bb51a239bf19caddc432ce3440a485da4c8ae454cd087b7ba3d99ae9506114",
+    "algorithm_id": "fixed_option_moneyflow_v1",
+    "runtime_matches": true,
+    "message": "发布数据已更新"
+  },
+  "existing_predictions_unchanged": 11367,
+  "existing_outcomes_unchanged": 11358,
+  "new_predictions": 8,
+  "new_outcomes": 8,
+  "original_archive_files_unchanged": 27,
+  "offline_four_model_replay_matches": true,
+  "replay_seconds": 29.06,
+  "no_new_data_retry": "skipped"
+}

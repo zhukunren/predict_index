@@ -96,6 +96,26 @@ def test_model_drift_does_not_publish_partial_results(portfolio_service, monkeyp
         assert session.scalar(select(func.count()).select_from(ShadowRun)) == 3
 
 
+def test_incomplete_collector_input_preserves_all_four_streams(portfolio_service, monkeypatch):
+    service = portfolio_service
+    original = activate(service)
+    with service.database.session() as session:
+        ledger = {row.id: row.prediction_fingerprint for row in session.scalars(select(PredictionLedger)).all()}
+
+    def incomplete(*_args, **_kwargs):
+        raise ValueError("Option directory not ready; unclassified contracts: new-contract.")
+
+    monkeypatch.setattr("prediction_service.model_context.extend_model_context", incomplete)
+    monkeypatch.setattr("数据拉取脚本_tushare.get_pro", lambda _token: object())
+    monkeypatch.setattr(service, "_configured_tushare_token", lambda: "test-token")
+    with pytest.raises(ValueError, match="directory not ready"):
+        portfolio.publish_portfolio(service, _features(9), source="tushare", actor="test", fetch_context=True)
+    assert service.read_published().snapshot_id == original.snapshot_id
+    with service.database.session() as session:
+        assert {row.id: row.prediction_fingerprint for row in session.scalars(select(PredictionLedger)).all()} == ledger
+        assert session.scalar(select(func.count()).select_from(ShadowRun)) == 3
+
+
 def test_all_models_settle_on_same_dates_and_recompute_exactly(portfolio_service):
     service = portfolio_service
     activate(service)

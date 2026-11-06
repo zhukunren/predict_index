@@ -88,9 +88,12 @@ def publish_portfolio(service, feature_frame, *, source, actor, raw_frames=None,
         context = context_for_snapshot(service, bundle, parent)
         raw, receipts = {}, []
         if fetch_context:
-            from .model_context import extend_model_context
+            from .model_context import extend_model_context, option_boundary_for_snapshot
             from 数据拉取脚本_tushare import get_pro
-            context, raw, receipts = extend_model_context(context, features, get_pro(service._configured_tushare_token()))
+            boundary = option_boundary_for_snapshot(parent, bundle.manifest["bundle_id"])
+            context, raw, receipts = extend_model_context(
+                context, features, get_pro(service._configured_tushare_token()), option_boundary=boundary,
+            )
         results = bundle.calculate(features, context)
         return persist_portfolio(service, bundle, features, results, context, releases,
                                  parent=parent, source=source, actor=actor,

@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from prediction_service.metrics import statistics
 from prediction_service.web import create_app
-from test_prediction_service import _features, _service
+from test_prediction_service import _features, _service, _public_items
 
 
 def _predictions():
@@ -110,7 +110,9 @@ def test_public_metrics_are_read_only_and_use_the_requested_window(tmp_path, mon
         assert client.get("/api/v1/sh000001/metrics?days=0").status_code == 422
         assert client.get("/api/v1/sh000001/metrics?days=5001").status_code == 422
         after = client.get("/api/v1/sh000001/latest.csv")
-        assert after.content == before.content == artifact.csv_bytes
+        assert after.content == before.content
+        assert after.json()["data"]["items"] == _public_items(artifact)
+        assert service.read_published().csv_bytes == artifact.csv_bytes
         assert after.headers["etag"] == before.headers["etag"]
         artifact.archive.results_path.write_bytes(b"corrupt")
         assert client.get("/api/v1/sh000001/metrics").status_code == 503

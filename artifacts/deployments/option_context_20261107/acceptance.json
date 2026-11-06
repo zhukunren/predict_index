@@ -1,0 +1,54 @@
+{
+  "checked_at_shanghai": "2026-11-07T01:40:08.454641+08:00",
+  "prediction_ledger": {
+    "original_rows_unchanged": 11367,
+    "new_rows": 8
+  },
+  "outcome_resolutions": {
+    "original_rows_unchanged": 11358,
+    "new_rows": 8
+  },
+  "model_releases": {
+    "original_rows_unchanged": 9,
+    "new_rows": 0
+  },
+  "market_snapshots": {
+    "original_rows_unchanged": 30,
+    "new_rows": 1
+  },
+  "old_and_new_archive_hashes_valid": true,
+  "all_four_models_match_rehearsal_exactly": true,
+  "snapshot_id": "8e707655-6c48-4098-acb1-334942e76c80",
+  "release_id": "72bb51a239bf19caddc432ce3440a485da4c8ae454cd087b7ba3d99ae9506114",
+  "latest_forecast_provenance": [
+    {
+      "信号日期": "20261104",
+      "预测目标交易日": "20261105",
+      "记录来源": "live",
+      "预测生成时间": "2026-11-04T18:31:57+08:00"
+    },
+    {
+      "信号日期": "20261105",
+      "预测目标交易日": "20261106",
+      "记录来源": "backfill",
+      "预测生成时间": "2026-11-07T01:39:26+08:00"
+    },
+    {
+      "信号日期": "20261106",
+      "预测目标交易日": "20261109",
+      "记录来源": "live",
+      "预测生成时间": "2026-11-07T01:39:26+08:00"
+    }
+  ],
+  "public_json_rows": 61,
+  "head_and_conditional_get_valid": true,
+  "https_endpoints_ok": true,
+  "active_publications": 1,
+  "one_scheduled_catchup_no_duplicate_jobs": true,
+  "production_job": [
+    "b07b18f3-861b-4a52-a4ed-2389de3134ee",
+    "succeeded",
+    "2026-11-06 17:38:42.414908",
+    "2026-11-06 17:39:27.422667"
+  ]
+}

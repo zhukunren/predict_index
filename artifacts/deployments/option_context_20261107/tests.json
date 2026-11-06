@@ -1,0 +1,14 @@
+{
+  "deployed_workspace": {
+    "tests": 492,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "staged_checkout": {
+    "tests": 479,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  }
+}

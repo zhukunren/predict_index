@@ -1406,7 +1406,11 @@ class RefreshManager:
                         publication = self.service._active_publication()
                         snapshot = session.get(MarketSnapshot, publication.snapshot_id) if publication else None
                         complete = snapshot is not None and snapshot.data_as_of >= idempotency_key
-                        if complete or existing.status in {"queued", "running"} or len(attempts) >= 6 or utcnow() - finished < timedelta(minutes=10):
+                        # A delayed provider can recover after the first hour,
+                        # including overnight/weekends. Slow retries instead of
+                        # permanently exhausting this trading day's attempts.
+                        retry_minutes = min(60, 10 * 2 ** min(max(len(attempts) - 5, 0), 3))
+                        if complete or existing.status in {"queued", "running"} or utcnow() - finished < timedelta(minutes=retry_minutes):
                             return existing.id, False
                 running = session.scalar(
                     select(RefreshJob).where(RefreshJob.status.in_(("queued", "running")))
