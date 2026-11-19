@@ -1,0 +1,60 @@
+{
+  "failure_categories": {
+    "base_market_empty": 8,
+    "missing_option_metadata": 18
+  },
+  "missing_contracts": [
+    {
+      "ts_code": "10012843.SH",
+      "underlying": "510300",
+      "list_date": "20261118",
+      "delist_date": "20261125"
+    },
+    {
+      "ts_code": "10012844.SH",
+      "underlying": "510300",
+      "list_date": "20261118",
+      "delist_date": "20261125"
+    },
+    {
+      "ts_code": "10012845.SH",
+      "underlying": "510300",
+      "list_date": "20261118",
+      "delist_date": "20261223"
+    },
+    {
+      "ts_code": "10012846.SH",
+      "underlying": "510300",
+      "list_date": "20261118",
+      "delist_date": "20261223"
+    },
+    {
+      "ts_code": "10012847.SH",
+      "underlying": "510300",
+      "list_date": "20261118",
+      "delist_date": "20270324"
+    },
+    {
+      "ts_code": "10012848.SH",
+      "underlying": "510300",
+      "list_date": "20261118",
+      "delist_date": "20270324"
+    },
+    {
+      "ts_code": "10012849.SH",
+      "underlying": "510300",
+      "list_date": "20261118",
+      "delist_date": "20270623"
+    },
+    {
+      "ts_code": "10012850.SH",
+      "underlying": "510300",
+      "list_date": "20261118",
+      "delist_date": "20270623"
+    }
+  ],
+  "official_listing_url": "https://www.sse.com.cn/assortment/options/disclo/info/",
+  "official_query_url": "https://query.sse.com.cn/commonQuery.do",
+  "listing_query": "SSE_ZQPZ_YSP_OPTZSXT_ADJUST_INFO_HYXG_SEARCH_L",
+  "listing_response_sha256": "be793eda5bb7b038fb9e9ded19c0830f124684e92435bf4329ba52b656ca63c3"
+}

@@ -1,0 +1,52 @@
+{
+  "checked_at_shanghai": "2026-11-19T14:51:02.365842+08:00",
+  "prediction_ledger": {
+    "unchanged": 11403,
+    "added": 4
+  },
+  "outcome_resolutions": {
+    "unchanged": 11394,
+    "added": 4
+  },
+  "model_releases": {
+    "unchanged": 9,
+    "added": 0
+  },
+  "market_snapshots": {
+    "unchanged": 38,
+    "added": 1
+  },
+  "old_and_new_archives_valid": true,
+  "all_four_models_match_rehearsal": true,
+  "latest_record": {
+    "信号日期": "20261118",
+    "预测目标交易日": "20261119",
+    "记录来源": "backfill",
+    "预测生成时间": "2026-11-19T14:47:36+08:00"
+  },
+  "snapshot_id": "20ee31ae-82f9-42d1-b0f9-b4a161d3eee1",
+  "release_id": "72bb51a239bf19caddc432ce3440a485da4c8ae454cd087b7ba3d99ae9506114",
+  "official_receipts": [
+    {
+      "name": "option_sse_active",
+      "provider": "SSE",
+      "query": "SSE_ZQPZ_YSP_GGQQZSXT_XXPL_DRHY_SEARCH_L",
+      "received_at": "2026-11-19T06:47:02.850385+00:00",
+      "rows": 716,
+      "sha256": "8b37865f192112ac1f1ea09fc6ee69b9ab6ec05449afb9bdf04cdcf4bbcb3bc9",
+      "url": "https://query.sse.com.cn/commonQuery.do"
+    }
+  ],
+  "health": {
+    "status": "ok",
+    "csv_available": true,
+    "data_as_of": "20261118",
+    "expected_as_of": "20261118",
+    "snapshot_id": "20ee31ae-82f9-42d1-b0f9-b4a161d3eee1",
+    "model_release": "72bb51a239bf19caddc432ce3440a485da4c8ae454cd087b7ba3d99ae9506114",
+    "algorithm_id": "fixed_option_moneyflow_v1",
+    "runtime_matches": true,
+    "message": "发布数据已更新"
+  },
+  "https_endpoints_ok": true
+}

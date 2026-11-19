@@ -15,6 +15,8 @@ from tools.option_position_features import aggregate_positions
 
 @pytest.fixture
 def inputs(monkeypatch):
+    monkeypatch.setattr("prediction_service.option_directory._active_rows", lambda: [])
+    monkeypatch.setattr("prediction_service.option_directory._request", lambda _params: {"result": []})
     monkeypatch.setattr("tools.run_downside_shadow.extend_context",
                         lambda context, *_: ({name: frame.copy() for name, frame in context.items()}, {}, []))
     dates = [20261104, 20261105, 20261106, 20261109]
@@ -115,6 +117,24 @@ def test_other_underlyings_are_classified_and_excluded(inputs):
     assert result["options"].iloc[1].P_interest == 630
 
 
+@pytest.mark.parametrize("underlying,expected_interest", [("510050", 730), ("510300", 630)])
+def test_exchange_directory_recovers_both_model_and_other_new_listings(inputs, monkeypatch, underlying, expected_interest):
+    data = inputs
+    exchange = []
+    for code, right, label in [("10012843", "C", "认购"), ("10012844", "P", "认沽")]:
+        exchange.append({"SECURITY_ID": code, "CONTRACT_ID": f"{underlying}{right}2702M03600",
+                         "CALL_OR_PUT": label, "START_DATE": "20261105", "END_DATE": "20270224"})
+        for date in data.dates[1:]:
+            data.client.raw.loc[len(data.client.raw)] = [code + ".SH", date, 10, 100.0, 100]
+    monkeypatch.setattr("prediction_service.option_directory._active_rows", lambda: exchange)
+    result, raw, receipts = extend_model_context(data.context, data.market, data.client, option_boundary=data.boundary)
+    assert result["options"].iloc[1].P_interest == expected_interest
+    assert result["options"].iloc[1].matched_contract_rows == 4
+    pd.testing.assert_frame_equal(result["options"].iloc[:1], data.context["options"], check_exact=True)
+    assert "option_sse_active" in raw
+    assert next(r for r in receipts if r["name"] == "option_sse_active")["provider"] == "SSE"
+
+
 @pytest.mark.parametrize("change", ["daily", "metadata", "missing_metadata", "missing_daily"])
 def test_corrupt_boundary_or_conflicting_known_metadata_is_rejected(inputs, change):
     data = inputs
@@ -170,6 +190,16 @@ def test_boundary_loader_requires_manifest_hashes_and_matching_bundle(tmp_path, 
     assert option_boundary_for_snapshot(None, "bundle") is None
     boundary = option_boundary_for_snapshot(snapshot, "bundle")
     pd.testing.assert_frame_equal(boundary.daily, data.boundary.daily)
+    resolved = frame_to_csv_bytes(data.boundary.contracts)
+    (directory / "option_resolved_catalog.csv").write_bytes(resolved)
+    files["raw/option_resolved_catalog.csv"] = sha256_bytes(resolved)
+    path.write_text(json.dumps(manifest))
+    pd.testing.assert_frame_equal(option_boundary_for_snapshot(snapshot, "bundle").catalog, data.boundary.contracts)
+    (directory / "option_resolved_catalog.csv").write_bytes(b"corrupt")
+    with pytest.raises(HistoricalMarketDataDriftError, match="directory is missing or corrupt"):
+        option_boundary_for_snapshot(snapshot, "bundle")
+    del files["raw/option_resolved_catalog.csv"]
+    path.write_text(json.dumps(manifest))
     (directory / "options_20261104.csv").write_bytes(b"corrupt")
     with pytest.raises(HistoricalMarketDataDriftError, match="missing or corrupt"):
         option_boundary_for_snapshot(snapshot, "bundle")

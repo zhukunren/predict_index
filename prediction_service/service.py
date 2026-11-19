@@ -878,6 +878,11 @@ class PredictionService:
         )
         token = self._configured_tushare_token()
         end_date = pd.Timestamp.now(tz="Asia/Shanghai").strftime("%Y%m%d")
+        expected = self.calendar.expected_as_of(
+            utcnow(), self.settings.scheduled_refresh_hour, self.settings.scheduled_refresh_minute,
+        )
+        if expected is not None:
+            end_date = min(end_date, expected)
         datasets = fetch_all(
             self.settings.history_start_date,
             end_date,

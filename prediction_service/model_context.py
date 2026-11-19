@@ -22,6 +22,7 @@ class OptionBoundary:
     contracts: pd.DataFrame
     daily: pd.DataFrame
     received_at: str | None = None
+    catalog: pd.DataFrame | None = None
 
 
 def option_boundary_for_snapshot(snapshot, bundle_id):
@@ -41,9 +42,16 @@ def option_boundary_for_snapshot(snapshot, bundle_id):
         if name not in files or not (directory / name).is_file() or sha256_file(directory / name) != files[name]:
             raise HistoricalMarketDataDriftError(f"Frozen option input missing or corrupt: {name}.")
     frames = [pd.read_csv(directory / name, encoding="utf-8-sig", float_precision="round_trip") for name in names]
+    resolved_name = "raw/option_resolved_catalog.csv"
+    catalog = None
+    if resolved_name in files:
+        path = directory / resolved_name
+        if not path.is_file() or sha256_file(path) != files[resolved_name]:
+            raise HistoricalMarketDataDriftError("Archived option directory is missing or corrupt.")
+        catalog = pd.read_csv(path, encoding="utf-8-sig", float_precision="round_trip")
     receipt = next((item for item in manifest.get("receipts", [])
                     if item["name"] == f"options_{snapshot.data_as_of}"), {})
-    return OptionBoundary(snapshot.id, *frames, received_at=receipt.get("received_at"))
+    return OptionBoundary(snapshot.id, *frames, received_at=receipt.get("received_at"), catalog=catalog)
 
 
 def _verify_boundary(frozen, daily, contracts):
@@ -98,10 +106,10 @@ def extend_model_context(context, market, client, *, option_boundary=None):
     if missing.empty:
         return context, raw, receipts
 
-    def remember(name, frame):
+    def remember(name, frame, **provenance):
         raw[name] = frame
         receipts.append({"name": name, "received_at": utcnow().isoformat(),
-                         "rows": len(frame), "sha256": sha256_bytes(frame_to_csv_bytes(frame))})
+                         "rows": len(frame), "sha256": sha256_bytes(frame_to_csv_bytes(frame)), **provenance})
 
     previous = int(context["options"].trade_date.iloc[-1])
     dates = missing.astype(int).tolist()
@@ -123,10 +131,14 @@ def extend_model_context(context, market, client, *, option_boundary=None):
     if not set(CONTRACT_FIELDS).issubset(catalog.columns) or catalog.ts_code.isna().any() or catalog.opt_code.isna().any() or catalog.ts_code.duplicated().any():
         raise ValueError("Incomplete or duplicate SSE option directory.")
     observed = pd.concat(frames, ignore_index=True)
-    unknown = sorted(set(observed.ts_code) - set(catalog.ts_code))
-    if unknown:
-        raise ValueError(f"Option directory not ready; unclassified contracts: {', '.join(unknown[:10])}.")
     remember("option_catalog", catalog)
+    from .option_directory import complete_option_directory
+    catalog = complete_option_directory(
+        catalog, observed, remember,
+        cached_catalog=option_boundary.catalog if option_boundary is not None else None,
+        source_snapshot_id=option_boundary.snapshot_id if option_boundary is not None else None,
+    )
+    remember("option_resolved_catalog", catalog)
     contracts = validate_contracts(catalog.loc[catalog.opt_code.eq(UNDERLYING)])
     remember("option_contracts", contracts)
     if option_boundary is None:

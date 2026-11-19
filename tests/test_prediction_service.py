@@ -358,6 +358,7 @@ def test_refresh_skips_when_provider_has_no_new_market_day(tmp_path: Path, monke
 def test_tushare_fetch_and_calendar_use_configured_token(tmp_path: Path, monkeypatch):
     settings = Settings.for_test(tmp_path, tushare_token="ini-token")
     service = PredictionService(settings, calculation_function=_fake_calculation)
+    service.database.initialize()
     fetcher = importlib.import_module("数据拉取脚本_tushare")
     captured: dict[str, object] = {}
 

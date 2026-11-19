@@ -1,0 +1,11 @@
+{
+  "status": "ok",
+  "csv_available": true,
+  "data_as_of": "20261118",
+  "expected_as_of": "20261118",
+  "snapshot_id": "20ee31ae-82f9-42d1-b0f9-b4a161d3eee1",
+  "model_release": "72bb51a239bf19caddc432ce3440a485da4c8ae454cd087b7ba3d99ae9506114",
+  "algorithm_id": "fixed_option_moneyflow_v1",
+  "runtime_matches": true,
+  "message": "发布数据已更新"
+}
